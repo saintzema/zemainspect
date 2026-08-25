@@ -5,9 +5,9 @@ import type * as OrtWeb from "onnxruntime-web";
 import {
   MODEL_INPUT_SIZE,
   decodeYolov8,
-  letterboxInfo,
   type Detection,
 } from "@/lib/inference/postprocess";
+import { letterboxToTensor } from "@/lib/inference/preprocess";
 
 type InferenceSession = OrtWeb.InferenceSession;
 
@@ -102,8 +102,14 @@ export function loadWebSession(modelUrl: string): Promise<InferenceSession> {
 }
 
 /**
- * Draw a video frame letterboxed into a square canvas and return NCHW float32.
- * Mirrors `preprocessImage` on the server so both paths agree on geometry.
+ * Capture a video frame and letterbox it into the model's NCHW input.
+ *
+ * The canvas is used only to read pixels at the frame's native size —
+ * `drawImage` scaling is deliberately avoided because its resampling is
+ * browser-dependent and matches neither OpenCV nor sharp. `letterboxToTensor`
+ * then does the resize, the same function the server uses, so the same frame
+ * yields the same detections whether it was inspected in the browser or
+ * through the API.
  */
 export function preprocessFrame(
   source: CanvasImageSource,
@@ -112,30 +118,17 @@ export function preprocessFrame(
   canvas: HTMLCanvasElement,
   size = MODEL_INPUT_SIZE,
 ) {
-  const box = letterboxInfo(sourceWidth, sourceHeight, size);
-  const drawW = Math.round(sourceWidth * box.scale);
-  const drawH = Math.round(sourceHeight * box.scale);
+  canvas.width = sourceWidth;
+  canvas.height = sourceHeight;
 
-  canvas.width = size;
-  canvas.height = size;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Canvas 2D context unavailable");
 
-  ctx.fillStyle = "rgb(114, 114, 114)";
-  ctx.fillRect(0, 0, size, size);
-  ctx.drawImage(source, box.padX, box.padY, drawW, drawH);
+  ctx.drawImage(source, 0, 0);
+  const { data } = ctx.getImageData(0, 0, sourceWidth, sourceHeight);
 
-  const { data } = ctx.getImageData(0, 0, size, size);
-  const plane = size * size;
-  const out = new Float32Array(3 * plane);
-
-  for (let i = 0; i < plane; i++) {
-    out[i] = data[i * 4] / 255;
-    out[plane + i] = data[i * 4 + 1] / 255;
-    out[2 * plane + i] = data[i * 4 + 2] / 255;
-  }
-
-  return { data: out, box };
+  // Canvas gives RGBA, hence a stride of 4.
+  return letterboxToTensor(data, sourceWidth, sourceHeight, size, 4);
 }
 
 export interface WebInferenceResult {

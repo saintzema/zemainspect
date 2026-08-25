@@ -14,7 +14,8 @@
     "prepare:assets": "node scripts/copy-ort-assets.mjs",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "verify:parity": "tsx scripts/verify-parity.ts"
   },
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",

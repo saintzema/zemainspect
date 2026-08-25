@@ -1,9 +1,17 @@
-# Deploying the detection model
+# The detection model
 
-ZemaInspect ships without weights. This is the one step that has to happen on a
-machine that holds `best.pt` and can reach PyPI.
+**The model is already in this repo and working.** You only need this document
+to re-export it, swap in a retrained checkpoint, or move it off-repo.
 
-## 1. Get the weights
+| File | What it is |
+|---|---|
+| `weights/yolov8n_neu_best.pt` | the trained YOLOv8n checkpoint (6.0 MB, 3,006,818 params) |
+| `public/models/yolov8n-neu.onnx` | the deployed export (11.7 MB, opset 12) |
+
+The export was verified against Ultralytics' own inference — see
+`scripts/verify-parity.ts` and the README section on it.
+
+## 1. Where the weights came from
 
 The trained YOLOv8 runs live in Google Drive under `ClosedMfgAI/`:
 
