@@ -17,7 +17,7 @@ import os from "os";
  * out of git; committing them keeps the deploy hermetic. Both work.
  */
 
-export const MODEL_INPUT_SIZE = 640;
+export { MODEL_INPUT_SIZE } from "@/lib/inference/postprocess";
 export const DEFAULT_MODEL_FILE = "yolov8n-neu.onnx";
 
 let inflight: Promise<Uint8Array> | null = null;
