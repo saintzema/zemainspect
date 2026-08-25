@@ -54,6 +54,84 @@ export function edgeBackend(): string {
   return activeBackend;
 }
 
+/**
+ * A WebGPU warmup slower than this means the browser is emulating the GPU in
+ * software. Real hardware finishes a 640x640 YOLOv8n pass in tens of
+ * milliseconds; software WebGPU measured ~16 s/frame, which is 30x SLOWER than
+ * plain WASM. Anything past this bound is not a GPU worth using.
+ */
+const WEBGPU_WARMUP_BUDGET_MS = 1500;
+
+/**
+ * Minimal structural types for the bits of the WebGPU adapter API we read.
+ * Declared locally rather than pulling in @webgpu/types, since this is the
+ * only place in the app that touches WebGPU directly.
+ */
+interface MinimalAdapterInfo {
+  vendor?: string;
+  architecture?: string;
+  description?: string;
+}
+
+interface MinimalAdapter {
+  isFallbackAdapter?: boolean;
+  info?: MinimalAdapterInfo;
+}
+
+interface MinimalGpu {
+  requestAdapter(): Promise<MinimalAdapter | null>;
+}
+
+/**
+ * Cheap pre-check for a real GPU.
+ *
+ * Timing a warmup is the reliable test, but on a software adapter that probe
+ * itself costs ~26 s — precisely on the low-end tablet least able to afford
+ * it. Asking the adapter what it is costs microseconds and skips the probe in
+ * the common bad case, cutting startup from ~30 s to ~2.7 s when measured
+ * against a software adapter. The timed warmup stays as the backstop for
+ * adapters that are slow without announcing themselves.
+ */
+async function hasUsableGpu(): Promise<boolean> {
+  const gpu = (navigator as Navigator & { gpu?: MinimalGpu }).gpu;
+  if (!gpu) return false;
+
+  try {
+    const adapter = await gpu.requestAdapter();
+    if (!adapter) return false;
+
+    // Standard flag for a CPU-backed implementation.
+    if (adapter.isFallbackAdapter) return false;
+
+    const info = adapter.info;
+    const descriptor = [info?.vendor, info?.architecture, info?.description]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    // Known software rasterisers shipped with browsers and Linux desktops.
+    return !/swiftshader|llvmpipe|lavapipe|softwarerasterizer|microsoft basic/.test(
+      descriptor,
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function warmupSession(
+  session: InferenceSession,
+  ort: typeof OrtWeb,
+): Promise<number> {
+  const input = new ort.Tensor(
+    "float32",
+    new Float32Array(3 * MODEL_INPUT_SIZE * MODEL_INPUT_SIZE),
+    [1, 3, MODEL_INPUT_SIZE, MODEL_INPUT_SIZE],
+  );
+  const started = performance.now();
+  await session.run({ [session.inputNames[0]]: input });
+  return performance.now() - started;
+}
+
 async function createSession(modelUrl: string): Promise<InferenceSession> {
   const ort = await loadOrt();
 
@@ -62,6 +140,10 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   ort.env.wasm.wasmPaths = "/ort/";
   ort.env.wasm.numThreads = 1;
   ort.env.logLevel = "error";
+  // Run the WASM backend in a worker. A frame takes a few hundred ms on CPU,
+  // which on the main thread would freeze the operator's UI between every
+  // inspection. Proxying keeps the page responsive on a low-end factory tablet.
+  ort.env.wasm.proxy = true;
 
   const response = await fetch(modelUrl, { cache: "force-cache" });
   if (!response.ok) {
@@ -69,26 +151,37 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
 
-  // Prefer WebGPU where the browser has it; fall back to WASM everywhere else.
-  const providers: string[][] = [["webgpu"], ["wasm"]];
-  let lastError: unknown;
+  const build = (provider: string) =>
+    ort.InferenceSession.create(bytes, {
+      executionProviders: [provider as never],
+      graphOptimizationLevel: "all",
+    });
 
-  for (const executionProviders of providers) {
-    try {
-      const session = await ort.InferenceSession.create(bytes, {
-        executionProviders: executionProviders as never,
-        graphOptimizationLevel: "all",
-      });
-      activeBackend = executionProviders[0];
-      return session;
-    } catch (err) {
-      lastError = err;
+  // Try WebGPU, but only keep it if it is actually fast. Selecting purely on
+  // "did it initialise" is the trap: a software-emulated adapter initialises
+  // happily and then runs far slower than WASM, which on a production line
+  // means a stalled inspection rather than a real-time one.
+  if (await hasUsableGpu()) try {
+    const candidate = await build("webgpu");
+    const warmupMs = await warmupSession(candidate, ort);
+    if (warmupMs <= WEBGPU_WARMUP_BUDGET_MS) {
+      activeBackend = "webgpu";
+      return candidate;
     }
+    console.warn(
+      `[zemainspect] WebGPU warmup took ${Math.round(warmupMs)}ms ` +
+        `(budget ${WEBGPU_WARMUP_BUDGET_MS}ms) — likely software emulation. Using WASM.`,
+    );
+    await candidate.release?.();
+  } catch {
+    // No WebGPU at all; WASM is the answer.
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("No usable ONNX execution provider in this browser");
+  const fallback = await build("wasm");
+  // Pay the one-off warmup here rather than on the operator's first frame.
+  await warmupSession(fallback, ort).catch(() => undefined);
+  activeBackend = "wasm";
+  return fallback;
 }
 
 export function loadWebSession(modelUrl: string): Promise<InferenceSession> {
