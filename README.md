@@ -132,8 +132,13 @@ Real response, measured end to end on this build:
 }
 ```
 
-Warm server inference measures ~105–125 ms per frame on a shared CPU. The
-browser edge path is faster still and does not cross the network at all.
+Warm server inference measures ~105–125 ms per frame on a shared CPU.
+
+The browser edge path was verified in headless Chromium against the same
+weights: **~480 ms per warm frame on WASM**, producing detections
+byte-identical to the server. See [docs/EDGE.md](docs/EDGE.md) — including why
+the code refuses a software-emulated WebGPU adapter, which benchmarked 33×
+*slower* than WASM and would have stalled a real line.
 
 ## Stack
 
@@ -183,7 +188,8 @@ npm run typecheck
 
 ## Deployment
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Short version: Vercel + Neon, set
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and, for the browser runtime,
+[docs/EDGE.md](docs/EDGE.md). Short version: Vercel + Neon, set
 the env vars from `.env.example`, point the Paystack and Stripe webhooks at
 `/api/webhooks/paystack` and `/api/webhooks/stripe`, and deploy the model per
 `docs/MODEL.md`.
