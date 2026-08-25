@@ -65,8 +65,35 @@ Per-class accuracy varies a lot (patches 91.8%, crazing 50.6%). The UI surfaces
 that: low-reliability classes are badged, and the compliance PDF states it in
 writing rather than presenting one accuracy number to an auditor.
 
-**The weights are not in this repo.** See [docs/MODEL.md](docs/MODEL.md) for
-exporting `best.pt` to ONNX and deploying it.
+**The weights are in this repo.** `weights/yolov8n_neu_best.pt` is the trained
+checkpoint; `public/models/yolov8n-neu.onnx` is the deployed export. Both are
+committed so the build is hermetic and the browser can fetch the model from our
+own origin. See [docs/MODEL.md](docs/MODEL.md) to re-export or swap them.
+
+### Verified against the reference implementation
+
+The app does its own letterboxing, YOLOv8 decode and NMS in TypeScript so the
+server and the browser can share one code path. That is a correctness risk: a
+subtly wrong decode yields confident boxes in the *wrong place*, which on a
+production line is worse than no detection. So there is a parity harness:
+
+```bash
+.venv/bin/python scripts/reference_predict.py ref.json samples/*.jpg
+npx tsx scripts/verify-parity.ts ./samples ./ref.json
+```
+
+It runs Ultralytics' own pipeline over the same weights and images and compares
+box-for-box. Current result: **28/28 detections matched, worst box IoU 0.9636,
+worst confidence difference 0.0038.**
+
+Getting there required implementing the resize ourselves
+(`lib/inference/preprocess.ts`). `sharp` silently ignores its `kernel` option
+when enlarging, and neither it nor canvas `drawImage` reproduces OpenCV's
+`INTER_LINEAR`, which the model was trained against. Measured on these weights,
+letting the image library choose shifted detection confidence by up to **0.10**
+— enough to flip a pass/fail at the 0.25 default — and moved box edges several
+pixels. The shared resampler also means the server and the edge path produce
+identical output for the same frame.
 
 ## Quick start
 
@@ -78,6 +105,8 @@ npx tsx prisma/seed.ts              # demo org + ~1k inspections + an API key
 npm run dev
 ```
 
+The model ships with the repo, so inspection works immediately.
+
 Open http://localhost:3000. The seed prints an API key once:
 
 ```bash
@@ -88,8 +117,23 @@ curl -X POST http://localhost:3000/api/v1/inspect \
   -F "line_id=press-line-1"
 ```
 
-Without deployed weights this returns `503 model_unavailable` with instructions
-— everything else (auth, quota, validation, storage) works.
+Real response, measured end to end on this build:
+
+```json
+{
+  "inspection_id": "cmt8dydr800017dy4ciof1zyn",
+  "result": "fail",
+  "defects": [
+    { "type": "crazing", "confidence": 0.2819, "bbox": [72, 121, 105, 35] },
+    { "type": "scratches", "confidence": 0.1244, "bbox": [5, 189, 194, 11] }
+  ],
+  "model_variant": "yolov8n-neu-onnx",
+  "processing_time_ms": 110
+}
+```
+
+Warm server inference measures ~105–125 ms per frame on a shared CPU. The
+browser edge path is faster still and does not cross the network at all.
 
 ## Stack
 
@@ -133,7 +177,7 @@ tests/                decode maths + letterbox geometry
 ```bash
 npm run dev         # dev server (copies the ORT runtime first)
 npm run build       # prisma generate + migrate deploy + next build
-npm test            # vitest — 18 tests
+npm test            # vitest — 22 tests
 npm run typecheck
 ```
 

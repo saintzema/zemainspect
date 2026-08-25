@@ -4,10 +4,10 @@ import { loadModelBytes, modelVariantName } from "@/lib/inference/model-source";
 import {
   MODEL_INPUT_SIZE,
   decodeYolov8,
-  letterboxInfo,
   type Detection,
   type LetterboxInfo,
 } from "@/lib/inference/postprocess";
+import { letterboxToTensor } from "@/lib/inference/preprocess";
 
 // onnxruntime-node ships native binaries. Import lazily so that merely loading
 // this module (e.g. during a build trace) never triggers binding resolution.
@@ -48,50 +48,30 @@ export interface PreprocessResult {
 }
 
 /**
- * Letterbox to a square model input and produce NCHW float32 RGB in [0,1].
+ * Decode an image to raw RGB at its native size, then letterbox it with our
+ * own resampler.
  *
- * The resize and pad are computed from `letterboxInfo` rather than delegated
- * to sharp's `fit: contain`, so the exact same numbers are used to invert the
- * transform during decode. Any drift here shifts every bounding box.
+ * sharp is deliberately used only as a decoder here. Its resize ignores the
+ * `kernel` option when enlarging and does not reproduce OpenCV's INTER_LINEAR,
+ * which the model was trained and benchmarked against; letting it resample
+ * shifted detection confidence by up to 0.10 against the reference
+ * implementation. `letterboxToTensor` is shared with the browser path, so both
+ * runtimes produce identical input for the same frame.
  */
 export async function preprocessImage(
   input: Buffer,
   size = MODEL_INPUT_SIZE,
 ): Promise<PreprocessResult> {
-  const image = sharp(input, { failOn: "none" }).rotate(); // honour EXIF orientation
-  const meta = await image.metadata();
-  const srcW = meta.width;
-  const srcH = meta.height;
-  if (!srcW || !srcH) throw new Error("Could not read image dimensions");
-
-  const box = letterboxInfo(srcW, srcH, size);
-  const drawW = Math.round(srcW * box.scale);
-  const drawH = Math.round(srcH * box.scale);
-
-  const { data } = await image
-    .resize(drawW, drawH, { fit: "fill" })
-    .extend({
-      top: box.padY,
-      left: box.padX,
-      bottom: size - drawH - box.padY,
-      right: size - drawW - box.padX,
-      background: { r: 114, g: 114, b: 114 }, // YOLO's canonical pad colour
-    })
+  const { data, info } = await sharp(input, { failOn: "none" })
+    .rotate() // honour EXIF orientation
     .removeAlpha()
     .toColourspace("srgb")
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  // Interleaved RGB -> planar RGB, normalised.
-  const plane = size * size;
-  const out = new Float32Array(3 * plane);
-  for (let i = 0; i < plane; i++) {
-    out[i] = data[i * 3] / 255;
-    out[plane + i] = data[i * 3 + 1] / 255;
-    out[2 * plane + i] = data[i * 3 + 2] / 255;
-  }
+  if (!info.width || !info.height) throw new Error("Could not read image dimensions");
 
-  return { data: out, box };
+  return letterboxToTensor(data, info.width, info.height, size, info.channels);
 }
 
 export interface InferenceOutcome {
