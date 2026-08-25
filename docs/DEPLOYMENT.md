@@ -101,8 +101,19 @@ unauthenticated calls when it is set.
 
 - **Vercel function limits.** Inference routes declare `maxDuration = 60`,
   which needs a Pro plan. On Hobby (10 s) prefer the edge path, or Path B.
-- **`onnxruntime-node`** ships native binaries and is in
-  `serverComponentsExternalPackages`. Its postinstall downloads them, so the
-  build host needs network access to Microsoft's CDN.
+- **`onnxruntime-node` and the 250 MB function limit.** The package ships
+  prebuilt binaries for five platforms (~283 MB): darwin/arm64, win32/x64,
+  win32/arm64, linux/x64 and linux/arm64. A serverless deploy only ever runs
+  linux/x64 (~44 MB), and Vercel caps an unzipped function at 250 MB — so
+  shipping all five exceeds the cap and fails the deploy. `next.config.mjs`
+  excludes the other four from output file tracing, which brings the inspect
+  function to ~110 MB.
+- **`.npmrc` sets `onnxruntime-node-install=skip`.** The CPU runtime we use is
+  already inside the npm tarball; that postinstall exists only to pull CUDA 12
+  and TensorRT provider libraries from NuGet, which this app never loads (it
+  runs `executionProviders: ["cpu"]`, and no serverless host has a GPU).
+  Skipping it removes a build-time CDN dependency and keeps the function small.
+  Do not remove this file — `npm ci` fails without network access to NuGet,
+  and succeeding would only bloat the deploy.
 - **Cold starts.** The first server inference after a cold start pays session
   creation (~1–2 s). The edge path avoids this entirely after the first load.
