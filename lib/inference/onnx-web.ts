@@ -1,13 +1,34 @@
 "use client";
 
-import type { InferenceSession, Tensor } from "onnxruntime-web";
+import type * as OrtWeb from "onnxruntime-web";
 
-import { MODEL_INPUT_SIZE } from "@/lib/inference/model-source";
 import {
+  MODEL_INPUT_SIZE,
   decodeYolov8,
   letterboxInfo,
   type Detection,
 } from "@/lib/inference/postprocess";
+
+type InferenceSession = OrtWeb.InferenceSession;
+
+/**
+ * Load onnxruntime-web as a native browser module from our own origin.
+ *
+ * The `webpackIgnore` comment is load-bearing: ORT's published .mjs is a
+ * prebuilt bundle the app bundler cannot parse, and it does not need to —
+ * the browser imports it directly from /ort/, which is also what lets a
+ * plant that blocks public CDNs run edge inference at all.
+ */
+const ORT_ENTRY = "/ort/ort.webgpu.min.mjs";
+
+let ortModule: Promise<typeof OrtWeb> | null = null;
+
+function loadOrt(): Promise<typeof OrtWeb> {
+  ortModule ??= import(/* webpackIgnore: true */ ORT_ENTRY).then(
+    (mod) => (mod.default ?? mod) as typeof OrtWeb,
+  );
+  return ortModule;
+}
 
 /**
  * Browser-side inference.
@@ -34,7 +55,7 @@ export function edgeBackend(): string {
 }
 
 async function createSession(modelUrl: string): Promise<InferenceSession> {
-  const ort = await import("onnxruntime-web");
+  const ort = await loadOrt();
 
   // Serve the wasm binaries from our own origin. A factory network that
   // blocks public CDNs (common in China) would otherwise fail to start.
@@ -130,7 +151,7 @@ export async function runWebInference(
   canvas: HTMLCanvasElement,
   confidenceThreshold?: number,
 ): Promise<WebInferenceResult> {
-  const ort = await import("onnxruntime-web");
+  const ort = await loadOrt();
   const started = performance.now();
 
   const { data, box } = preprocessFrame(source, sourceWidth, sourceHeight, canvas);
@@ -139,7 +160,7 @@ export async function runWebInference(
     3,
     MODEL_INPUT_SIZE,
     MODEL_INPUT_SIZE,
-  ]) as Tensor;
+  ]);
 
   const output = await session.run({ [session.inputNames[0]]: tensor });
   const head = output[session.outputNames[0]];

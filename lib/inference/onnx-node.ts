@@ -1,11 +1,8 @@
 import sharp from "sharp";
 
+import { loadModelBytes, modelVariantName } from "@/lib/inference/model-source";
 import {
   MODEL_INPUT_SIZE,
-  loadModelBytes,
-  modelVariantName,
-} from "@/lib/inference/model-source";
-import {
   decodeYolov8,
   letterboxInfo,
   type Detection,

@@ -21,6 +21,21 @@
     --page-from: 226 232 240;
     --page-via: 241 245 249;
     --page-to: 219 234 254;
+
+    /*
+     * Categorical series colours, one per NEU defect class, in fixed slot
+     * order — never cycled, never reassigned when a filter changes the series
+     * count. Validated for CVD separation and contrast against this mode's
+     * chart surface (#f0f4f9); light mode sits below 3:1 for four slots, which
+     * is why every categorical chart ships direct labels and a table view.
+     */
+    --series-1: #2a78d6; /* blue    — crazing */
+    --series-2: #eb6834; /* orange  — inclusion */
+    --series-3: #1baf7a; /* aqua    — patches */
+    --series-4: #eda100; /* yellow  — pitted_surface */
+    --series-5: #e87ba4; /* magenta — rolled-in_scale */
+    --series-6: #008300; /* green   — scratches */
+    --grid-line: rgba(71, 85, 105, 0.18);
   }
 
   .dark {
@@ -35,6 +50,16 @@
     --page-from: 9 11 17;
     --page-via: 17 20 30;
     --page-to: 23 20 42;
+
+    /* Same eight hues re-stepped for the dark surface (#14161f) — a selected
+     * dark palette, not an automatic flip of the light one. All clear 3:1. */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --grid-line: rgba(165, 180, 202, 0.16);
   }
 
   /* The admin console runs the same glass system on a purple accent. */
@@ -117,5 +142,5 @@
 }
 
 .recharts-cartesian-grid line {
-  stroke: rgb(var(--ink-muted) / 0.18);
+  stroke: var(--grid-line);
 }

@@ -1,5 +1,14 @@
 import { NEU_CLASSES } from "@/lib/inference/labels";
 
+/**
+ * Square model input edge, in pixels.
+ *
+ * Lives here rather than beside the model loader because both the Node and
+ * browser runtimes need it, and the loader pulls in `fs` — importing it from
+ * client code would drag Node built-ins into the browser bundle.
+ */
+export const MODEL_INPUT_SIZE = 640;
+
 export interface Detection {
   type: string;
   confidence: number;

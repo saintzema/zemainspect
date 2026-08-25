@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/cron/check-thresholds",
+      "schedule": "*/15 * * * *"
+    }
+  ],
+  "functions": {
+    "app/api/v1/inspect/route.ts": { "maxDuration": 60 },
+    "app/api/v1/inspect/batch/route.ts": { "maxDuration": 60 },
+    "app/api/reports/route.ts": { "maxDuration": 60 }
+  }
+}
