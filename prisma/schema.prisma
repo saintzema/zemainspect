@@ -1,0 +1,292 @@
+// ZemaInspect — data model
+// See docs/ARCHITECTURE.md for how these models map to product surfaces.
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma"
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  VIEWER
+  SUPER_ADMIN
+}
+
+enum PlanTier {
+  TRIAL
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+enum InspectionResult {
+  PASS
+  FAIL
+}
+
+enum BatchStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum PaymentProvider {
+  STRIPE
+  PAYSTACK
+}
+
+// ---------------------------------------------------------------------------
+// Auth (NextAuth) — User doubles as the app's member record.
+// ---------------------------------------------------------------------------
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  emailVerified     DateTime?
+  name              String?
+  image             String?
+  preferredLanguage String    @default("en") // "en" | "zh"
+  role              Role      @default(OWNER)
+
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  accounts Account[]
+  sessions Session[]
+
+  createdAt    DateTime @default(now())
+  lastActiveAt DateTime @default(now())
+
+  @@index([organizationId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy & billing
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id       String   @id @default(cuid())
+  name     String
+  planTier PlanTier @default(TRIAL)
+
+  trialEndsAt       DateTime?
+  manualAccessUntil DateTime? // admin-granted override (pilot customers)
+  manualPlanTier    PlanTier? // tier the override grants, e.g. PRO
+
+  referralCode   String  @unique @default(cuid())
+  referredByCode String?
+
+  // Billing identities. An org uses exactly one provider at a time, chosen at
+  // first checkout: Paystack for NGN/African cards, Stripe elsewhere.
+  billingProvider      PaymentProvider @default(PAYSTACK)
+  billingCurrency      String          @default("NGN")
+  stripeCustomerId     String?         @unique
+  paystackCustomerCode String?         @unique
+
+  // Integrations
+  webhookUrl            String?
+  webhookSecret         String?
+  notificationThreshold Float? // 0.05 = alert when hourly defect rate > 5%
+  notifyEmail           String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  users          User[]
+  apiKeys        ApiKey[]
+  subscription   Subscription?
+  inspectionJobs InspectionJob[]
+  batches        InspectionBatch[]
+
+  @@index([referralCode])
+}
+
+model ApiKey {
+  id             String       @id @default(cuid())
+  // Only a SHA-256 hash is stored. The plaintext key is shown once at creation.
+  keyHash        String       @unique
+  keyPrefix      String // e.g. "zi_live_9f3a" — safe to display for identification
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  label          String?
+  createdAt      DateTime     @default(now())
+  revokedAt      DateTime?
+  lastUsedAt     DateTime?
+
+  @@index([organizationId])
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  organizationId       String             @unique
+  organization         Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  provider             PaymentProvider    @default(PAYSTACK)
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  // Paystack identifiers. `paystackEmailToken` is required alongside the
+  // subscription code to call Paystack's disable/manage endpoints.
+  paystackSubscriptionCode String?        @unique
+  paystackEmailToken       String?
+  paystackPlanCode         String?
+
+  status   SubscriptionStatus
+  planTier PlanTier
+
+  currentPeriodEnd         DateTime
+  monthlyInspectionLimit   Int
+  inspectionsUsedThisCycle Int      @default(0)
+  overageInspections       Int      @default(0)
+
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Inspection
+// ---------------------------------------------------------------------------
+
+model InspectionJob {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  imageUrl        String? // Vercel Blob URL; null when the client keeps the frame at the edge
+  productCategory String // "steel" | "general" | "automotive"
+  lineId          String?
+
+  result           InspectionResult
+  defects          Json // [{ type, confidence, bbox: [x,y,w,h] }]
+  modelVariant     String // "yolov8n-neu-onnx" | "yolov8n-neu-webgpu" | "yolov8l-neu-external"
+  inferenceSource  String           @default("server") // "server" | "edge"
+  processingTimeMs Int
+
+  batchId String?
+  batch   InspectionBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, result, createdAt])
+  @@index([batchId])
+}
+
+model InspectionBatch {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  status          BatchStatus @default(QUEUED)
+  productCategory String
+  lineId          String?
+  totalImages     Int
+  processedImages Int         @default(0)
+  failedImages    Int         @default(0)
+  error           String?
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  jobs InspectionJob[]
+
+  @@index([organizationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Growth & ops
+// ---------------------------------------------------------------------------
+
+model ReferralCredit {
+  id            String   @id @default(cuid())
+  referrerOrgId String
+  referredOrgId String
+  creditMonths  Int      @default(1)
+  status        String   @default("pending") // pending | applied
+  createdAt     DateTime @default(now())
+
+  @@unique([referrerOrgId, referredOrgId])
+  @@index([referrerOrgId])
+}
+
+model TranslationCache {
+  id             String   @id @default(cuid())
+  sourceHash     String   @unique // sha256(sourceText + targetLang)
+  sourceText     String   @db.Text
+  targetLang     String
+  translatedText String   @db.Text
+  createdAt      DateTime @default(now())
+}
+
+model AdminAuditLog {
+  id          String   @id @default(cuid())
+  adminUserId String
+  action      String // grant_access | impersonate | refund | override_limit
+  targetOrgId String?
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([targetOrgId, createdAt])
+  @@index([createdAt])
+}
+
+model NotificationEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  kind           String // defect_rate_threshold
+  windowStart    DateTime
+  defectRate     Float
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+}

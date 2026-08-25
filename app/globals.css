@@ -2,26 +2,145 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
+/*
+ * Dark mode is the default (factory floors are dim and monitors are bright).
+ * Colours are stored as raw RGB triplets so Tailwind's `<alpha-value>` syntax
+ * can vary opacity from the same token.
+ */
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --accent: 59 130 246; /* blue-500 — customer app */
+    --accent-soft: 147 197 253;
+    --surface: 248 250 252;
+    --ink: 15 23 42;
+    --ink-muted: 71 85 105;
+    --pass: 22 163 74;
+    --fail: 220 38 38;
+    --warn: 217 119 6;
+
+    --page-from: 226 232 240;
+    --page-via: 241 245 249;
+    --page-to: 219 234 254;
+
+    /*
+     * Categorical series colours, one per NEU defect class, in fixed slot
+     * order — never cycled, never reassigned when a filter changes the series
+     * count. Validated for CVD separation and contrast against this mode's
+     * chart surface (#f0f4f9); light mode sits below 3:1 for four slots, which
+     * is why every categorical chart ships direct labels and a table view.
+     */
+    --series-1: #2a78d6; /* blue    — crazing */
+    --series-2: #eb6834; /* orange  — inclusion */
+    --series-3: #1baf7a; /* aqua    — patches */
+    --series-4: #eda100; /* yellow  — pitted_surface */
+    --series-5: #e87ba4; /* magenta — rolled-in_scale */
+    --series-6: #008300; /* green   — scratches */
+    --grid-line: rgba(71, 85, 105, 0.18);
+  }
+
+  .dark {
+    --surface: 15 18 26;
+    --ink: 241 245 249;
+    /* Lifted from slate-400 to keep secondary text above 4.5:1 on glass. */
+    --ink-muted: 165 180 202;
+    --pass: 52 211 153;
+    --fail: 248 113 113;
+    --warn: 251 191 36;
+
+    --page-from: 9 11 17;
+    --page-via: 17 20 30;
+    --page-to: 23 20 42;
+
+    /* Same eight hues re-stepped for the dark surface (#14161f) — a selected
+     * dark palette, not an automatic flip of the light one. All clear 3:1. */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --grid-line: rgba(165, 180, 202, 0.16);
+  }
+
+  /* The admin console runs the same glass system on a purple accent. */
+  .theme-admin {
+    --accent: 139 92 246; /* violet-500 */
+    --accent-soft: 196 181 253;
+    --page-to: 46 16 101;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply min-h-dvh bg-surface text-ink antialiased;
+    background-image: linear-gradient(
+      160deg,
+      rgb(var(--page-from)) 0%,
+      rgb(var(--page-via)) 45%,
+      rgb(var(--page-to)) 100%
+    );
+    background-attachment: fixed;
+  }
+
+  /* Respect operators who have reduced motion turned on. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /*
+   * Base glass surface. Backdrop blur degrades to a near-solid panel where it
+   * is unsupported, which keeps text legible rather than transparent.
+   */
+  .glass-surface {
+    @apply rounded-glass border border-white/40 bg-glass-light shadow-glass backdrop-blur-glass;
+  }
+
+  .dark .glass-surface {
+    @apply border-white/10 bg-glass-dark;
+  }
+
+  @supports not (backdrop-filter: blur(1px)) {
+    .glass-surface {
+      background-color: rgba(255, 255, 255, 0.93);
+    }
+    .dark .glass-surface {
+      background-color: rgba(18, 20, 28, 0.94);
+    }
+  }
+
+  .shimmer-text {
+    @apply relative overflow-hidden;
+  }
+
+  .shimmer-text::after {
+    content: "";
+    @apply absolute inset-0 -translate-x-full animate-shimmer;
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.35),
+      transparent
+    );
+  }
 }
 
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
-  }
+/* Charts inherit the ink colour rather than Recharts' hard-coded greys. */
+.recharts-cartesian-axis-tick text {
+  fill: rgb(var(--ink-muted));
+  font-size: 12px;
+}
+
+.recharts-cartesian-grid line {
+  stroke: var(--grid-line);
 }
