@@ -279,7 +279,8 @@
     "alipayStep1": "Open Alipay and scan the code.",
     "alipayStep2": "Enter the amount for your plan and paste the reference into the note.",
     "alipayStep3": "Send the payment screenshot to {contact}.",
-    "alipayManualNote": "Alipay payments are confirmed by hand, so your plan is activated after we see the transfer — usually within one business day. Card payments activate immediately."
+    "alipayManualNote": "Alipay payments are confirmed by hand, so your plan is activated after we see the transfer — usually within one business day. Card payments activate immediately.",
+    "alipayQrMissing": "The payment QR code could not be loaded. Check ALIPAY_QR_URL."
   },
   "team": {
     "title": "Team",

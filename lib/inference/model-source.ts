@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { mkdir, readFile, writeFile } from "fs/promises";
-import { existsSync } from "fs";
+import { existsSync, statSync } from "fs";
 import path from "path";
 import os from "os";
 
@@ -32,9 +32,40 @@ export class ModelUnavailableError extends Error {
   }
 }
 
+/** The model filename, ignoring a blank override. */
+export function modelFileName(): string {
+  return envOr("MODEL_FILE", DEFAULT_MODEL_FILE);
+}
+
 function bundledPath(): string {
-  const file = envOr("MODEL_FILE", DEFAULT_MODEL_FILE);
-  return path.join(process.cwd(), "public", "models", file);
+  return path.join(process.cwd(), "public", "models", modelFileName());
+}
+
+/**
+ * Whether a real file sits at `p` — not merely "something exists there".
+ *
+ * `existsSync` answers yes for a directory, and that is not academic: a blank
+ * MODEL_FILE used to resolve this to the `public/models` directory itself, so
+ * the app reported the model as configured, rendered the edge inspector, and
+ * then handed the browser `/models/` to download. A 404 at the camera, from a
+ * deployment that believed it was fine.
+ */
+function isFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The URL the browser downloads the weights from, served off our own origin so
+ * a plant that blocks public CDNs still works. Null when this deployment has
+ * no weights to serve, which is what tells the UI to hide the edge inspector
+ * rather than offer a camera that cannot run.
+ */
+export function publicModelUrl(): string | null {
+  return modelIsConfigured() ? `/models/${modelFileName()}` : null;
 }
 
 function tmpCachePath(url: string): string {
@@ -70,7 +101,7 @@ async function loadFromUrl(url: string): Promise<Uint8Array> {
 
 async function resolveBytes(): Promise<Uint8Array> {
   const local = bundledPath();
-  if (existsSync(local)) {
+  if (isFile(local)) {
     return new Uint8Array(await readFile(local));
   }
 
@@ -78,9 +109,8 @@ async function resolveBytes(): Promise<Uint8Array> {
   if (url) return loadFromUrl(url);
 
   throw new ModelUnavailableError(
-    `No ONNX model available. Either commit weights to public/models/${
-      envOr("MODEL_FILE", DEFAULT_MODEL_FILE)
-    } or set MODEL_URL to a hosted .onnx file. ` +
+    `No ONNX model available. Either commit weights to public/models/${modelFileName()} ` +
+      `or set MODEL_URL to a hosted .onnx file. ` +
       `Run "python scripts/export_onnx.py --weights best.pt" to produce one.`,
   );
 }
@@ -110,7 +140,7 @@ export function loadModelBytes(): Promise<Uint8Array> {
 
 /** True when the deployment has weights it can actually serve. */
 export function modelIsConfigured(): boolean {
-  return existsSync(bundledPath()) || hasEnv("MODEL_URL");
+  return isFile(bundledPath()) || hasEnv("MODEL_URL");
 }
 
 export function modelVariantName(): string {

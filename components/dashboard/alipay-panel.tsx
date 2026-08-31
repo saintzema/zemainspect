@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useState } from "react";
 import { Copy, QrCode } from "lucide-react";
 
@@ -34,6 +33,9 @@ export function AlipayPanel({
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState<string | null>(null);
+  // A QR that fails to load is worse than none: the buyer sees an empty
+  // frame and no way to pay, with nothing saying why.
+  const [imageBroken, setImageBroken] = useState(false);
 
   if (offers.length === 0) return null;
 
@@ -42,19 +44,32 @@ export function AlipayPanel({
       <div className="flex flex-col gap-5 sm:flex-row">
         <div className="shrink-0">
           <div className="overflow-hidden rounded-2xl bg-white p-2">
-            {/* Unoptimized: the QR is a fixed asset we ship, and running it
-                through the image optimizer risks resampling artefacts that
-                make a dense code harder for a phone camera to lock onto. */}
-            <Image
+            {/*
+              A plain <img>, deliberately, not next/image. Two reasons, both
+              practical: running a dense QR through an image optimizer risks
+              resampling artefacts that stop a phone camera locking onto it,
+              and next/image would reject an ALIPAY_QR_URL pointing anywhere
+              outside this origin unless the host is added to next.config. A
+              bare img means the URL can be a committed file, an external link
+              or a data: URI, and the operator does not have to redeploy the
+              app to change their payment QR.
+            */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
               src={qrUrl}
               alt={t("billing.alipayQrAlt")}
               width={220}
               height={220}
-              unoptimized
               className="h-[220px] w-[220px] object-contain"
+              onError={() => setImageBroken(true)}
             />
           </div>
-          {accountName && (
+          {imageBroken && (
+            <p role="alert" className="mt-2 max-w-[220px] text-center text-xs text-fail">
+              {t("billing.alipayQrMissing")}
+            </p>
+          )}
+          {accountName && !imageBroken && (
             <p className="mt-2 text-center text-xs text-ink-muted">{accountName}</p>
           )}
         </div>

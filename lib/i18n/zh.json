@@ -279,7 +279,8 @@
     "alipayStep1": "打开支付宝并扫描二维码。",
     "alipayStep2": "输入所选套餐的金额，并将参考编号粘贴到备注中。",
     "alipayStep3": "将付款截图发送至 {contact}。",
-    "alipayManualNote": "支付宝付款需人工确认，我们收到转账后即开通套餐，通常在一个工作日内完成。银行卡支付则立即生效。"
+    "alipayManualNote": "支付宝付款需人工确认，我们收到转账后即开通套餐，通常在一个工作日内完成。银行卡支付则立即生效。",
+    "alipayQrMissing": "无法加载收款二维码，请检查 ALIPAY_QR_URL。"
   },
   "team": {
     "title": "团队",
