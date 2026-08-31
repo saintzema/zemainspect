@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 
 import { prisma } from "@/lib/prisma";
+import { env, hasEnv } from "@/lib/env";
 import { stripePriceIdFor } from "@/lib/plans";
 import {
   BillingNotConfiguredError,
@@ -13,9 +14,10 @@ import {
 let cached: Stripe | null = null;
 
 export function stripeClient(): Stripe {
-  if (!process.env.STRIPE_SECRET_KEY) throw new BillingNotConfiguredError("STRIPE");
+  const key = env("STRIPE_SECRET_KEY");
+  if (!key) throw new BillingNotConfiguredError("STRIPE");
   if (!cached) {
-    cached = new Stripe(process.env.STRIPE_SECRET_KEY, {
+    cached = new Stripe(key, {
       apiVersion: "2026-07-29.dahlia",
       typescript: true,
     });
@@ -46,7 +48,7 @@ export const stripeProvider: BillingProvider = {
   id: "STRIPE",
 
   isConfigured() {
-    return !!process.env.STRIPE_SECRET_KEY;
+    return hasEnv("STRIPE_SECRET_KEY");
   },
 
   async createCheckout(req: CheckoutRequest): Promise<CheckoutResult> {

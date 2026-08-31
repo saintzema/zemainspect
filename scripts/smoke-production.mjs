@@ -68,6 +68,7 @@ section("1. Public pages");
 await expectStatus("landing page", "/", 200);
 await expectStatus("pricing page", "/pricing", 200);
 await expectStatus("sign-in page", "/signin", 200);
+await expectStatus("sign-up page", "/signup", 200);
 
 section("2. Auth gating (must redirect, never render)");
 await expectStatus("/dashboard redirects when signed out", "/dashboard", [302, 307]);
@@ -82,6 +83,33 @@ await expectStatus("POST /api/v1/inspect with bad key -> 401", "/api/v1/inspect"
   headers: { Authorization: "Bearer zi_live_definitely_not_valid" },
 });
 await expectStatus("cron endpoint without token -> 401", "/api/cron/check-thresholds", [401, 403]);
+await expectStatus("admin user API -> 403", "/api/admin/users", 403, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ email: "smoke@example.com", role: "SUPER_ADMIN" }),
+});
+
+section("3b. Sign-in forms are wired up");
+{
+  const { res, error } = await req("/signin");
+  if (error) bad("password sign-in offered", error);
+  else {
+    const html = await res.text();
+    if (/type="password"/.test(html)) ok("password sign-in offered");
+    else bad("password sign-in offered", "no password field on /signin");
+  }
+}
+{
+  // Registration must reject a weak password before it reaches the database.
+  const { res, error } = await req("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: `smoke-${Date.now()}@example.invalid`, password: "short" }),
+  });
+  if (error) bad("registration rejects a weak password", error);
+  else if (res.status === 400) ok("registration rejects a weak password");
+  else bad("registration rejects a weak password", `HTTP ${res.status} — check password rules`);
+}
 
 section("4. Webhooks reject forged signatures");
 await expectStatus("paystack, no signature -> 401", "/api/webhooks/paystack", 401, {
@@ -97,14 +125,35 @@ await expectStatus("paystack, forged signature -> 401", "/api/webhooks/paystack"
 
 section("5. Model + edge runtime actually deployed");
 {
-  const { res, error, ms } = await req("/models/yolov8n-neu.onnx", { method: "HEAD" });
+  // Ask for the first 2 KB rather than issuing a HEAD. A CDN that compresses
+  // the response drops content-length from a HEAD reply, which used to make a
+  // perfectly healthy 12 MB model look like 0 bytes. A ranged GET reports the
+  // real size in content-range and lets us confirm the bytes are an ONNX
+  // ModelProto (field 1, ir_version) rather than an HTML error page.
+  const { res, error, ms } = await req("/models/yolov8n-neu.onnx", {
+    headers: { Range: "bytes=0-2047", "Accept-Encoding": "identity" },
+  });
   if (error) bad("ONNX model served", error);
-  else if (res.status !== 200) bad("ONNX model served", `HTTP ${res.status} — inference will 503`);
-  else {
-    const size = Number(res.headers.get("content-length") || 0);
+  else if (res.status !== 200 && res.status !== 206) {
+    bad("ONNX model served", `HTTP ${res.status} — inference will 503`);
+  } else {
+    const head = new Uint8Array(await res.arrayBuffer());
+    const range = res.headers.get("content-range") || "";
+    const total = Number(
+      range.match(/\/(\d+)$/)?.[1] ??
+        (res.status === 200 ? head.byteLength : res.headers.get("content-length")) ??
+        0,
+    );
     const cache = res.headers.get("cache-control") || "";
-    if (size < 1_000_000) bad("ONNX model served", `suspiciously small: ${size} bytes`);
-    else ok("ONNX model served", `${(size / 1024 / 1024).toFixed(1)} MB in ${ms}ms`);
+
+    if (head[0] !== 0x08) {
+      bad("ONNX model served", "not an ONNX model — first bytes are not a ModelProto");
+    } else if (total < 1_000_000) {
+      bad("ONNX model served", `suspiciously small: ${total} bytes`);
+    } else {
+      ok("ONNX model served", `${(total / 1024 / 1024).toFixed(1)} MB in ${ms}ms`);
+    }
+
     if (cache.includes("immutable")) ok("model cached immutably", cache);
     else bad("model cached immutably", `got "${cache}" — every edge client refetches ~12 MB`);
   }

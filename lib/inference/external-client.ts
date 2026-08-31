@@ -1,3 +1,4 @@
+import { env, hasEnv } from "@/lib/env";
 import type { Detection } from "@/lib/inference/postprocess";
 import type { InferenceOutcome } from "@/lib/inference/onnx-node";
 
@@ -8,7 +9,7 @@ import type { InferenceOutcome } from "@/lib/inference/onnx-node";
  */
 
 export function externalInferenceConfigured(): boolean {
-  return !!process.env.INFERENCE_SERVICE_URL;
+  return hasEnv("INFERENCE_SERVICE_URL");
 }
 
 interface ExternalResponse {
@@ -27,7 +28,7 @@ export async function runExternalInference(
   filename: string,
   contentType: string,
 ): Promise<InferenceOutcome> {
-  const baseUrl = process.env.INFERENCE_SERVICE_URL;
+  const baseUrl = env("INFERENCE_SERVICE_URL");
   if (!baseUrl) throw new Error("INFERENCE_SERVICE_URL is not set");
 
   const started = Date.now();

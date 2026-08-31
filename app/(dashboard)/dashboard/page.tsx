@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { recentInspections, summaryStats } from "@/lib/analytics";
 import { usageFor } from "@/lib/usage";
 import { effectiveTier } from "@/lib/plans";
-import { modelIsConfigured } from "@/lib/inference/model-source";
+import { publicModelUrl } from "@/lib/inference/model-source";
 import { InspectionFeed } from "@/components/dashboard/inspection-feed";
 import { EdgeInspector } from "@/components/dashboard/edge-inspector";
 import { StatsRow, PageHeading } from "@/components/dashboard/stats-row";
@@ -30,10 +30,7 @@ export default async function DashboardPage() {
 
   const tier = effectiveTier(organization);
 
-  // Served from our own origin so a plant that blocks public CDNs still works.
-  const modelUrl = modelIsConfigured()
-    ? `/models/${process.env.MODEL_FILE ?? "yolov8n-neu.onnx"}`
-    : null;
+  const modelUrl = publicModelUrl();
 
   return (
     <div className="space-y-5">

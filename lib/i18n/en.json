@@ -120,7 +120,24 @@
     "otpInvalid": "That code is not valid or has expired. Request a new one.",
     "otpSendFailed": "We could not send the code. Check the address and try again.",
     "sendCode": "Send sign-in code",
-    "noEmailProvider": "Email sign-in is not configured on this deployment yet."
+    "noEmailProvider": "Email sign-in is not configured on this deployment yet.",
+    "passwordLabel": "Password",
+    "passwordPlaceholder": "At least 10 characters",
+    "signInAction": "Sign in",
+    "signUpAction": "Create account",
+    "noAccount": "No account yet?",
+    "haveAccount": "Already have an account?",
+    "createOne": "Create one",
+    "signInInstead": "Sign in",
+    "signUpTitle": "Create your ZemaInspect account",
+    "signUpSubtitle": "14-day free trial. No card required.",
+    "nameLabel": "Your name",
+    "namePlaceholder": "QC lead",
+    "invalidCredentials": "That email or password is not correct.",
+    "signUpFailed": "Could not create the account.",
+    "emailCodeInstead": "Email me a sign-in code instead",
+    "passwordInstead": "Use a password instead",
+    "accountDisabled": "This account has been disabled. Contact your administrator."
   },
   "onboarding": {
     "title": "Set up your first line",
@@ -254,7 +271,16 @@
     "statusPAST_DUE": "Payment failed",
     "statusCANCELLED": "Cancelled",
     "pastDueWarning": "Your last payment failed. Update your payment method to avoid interruption.",
-    "manualAccess": "Your account has complimentary {tier} access until {date}."
+    "manualAccess": "Your account has complimentary {tier} access until {date}.",
+    "alipayTitle": "Pay with Alipay",
+    "alipayBody": "For customers in China. Scan the code, pay the monthly amount, and include the reference in the transfer note.",
+    "alipayQrAlt": "Alipay payment QR code",
+    "alipayReference": "Reference",
+    "alipayStep1": "Open Alipay and scan the code.",
+    "alipayStep2": "Enter the amount for your plan and paste the reference into the note.",
+    "alipayStep3": "Send the payment screenshot to {contact}.",
+    "alipayManualNote": "Alipay payments are confirmed by hand, so your plan is activated after we see the transfer — usually within one business day. Card payments activate immediately.",
+    "alipayQrMissing": "The payment QR code could not be loaded. Check ALIPAY_QR_URL."
   },
   "team": {
     "title": "Team",
@@ -273,7 +299,8 @@
     "remove": "Remove",
     "confirmRemove": "Remove this teammate from the organization?",
     "inviteSent": "Invitation sent to {email}",
-    "onlyOwner": "Only an owner can change team membership."
+    "onlyOwner": "Only an owner can change team membership.",
+    "roleSUPER_ADMIN": "Super admin"
   },
   "settings": {
     "title": "Settings",
@@ -337,7 +364,28 @@
     "creditStatus": "Credit",
     "pending": "Pending",
     "applied": "Applied",
-    "noAccess": "You do not have access to this area."
+    "noAccess": "You do not have access to this area.",
+    "users": "Users",
+    "usersSubtitle": "Everyone who can sign in, across all organizations.",
+    "createUser": "Create user",
+    "userEmail": "Email",
+    "userRole": "Role",
+    "userOrg": "Organization",
+    "userStatus": "Status",
+    "userCreated": "Created",
+    "userActive": "Active",
+    "userDisabled": "Disabled",
+    "disableUser": "Disable",
+    "enableUser": "Enable",
+    "resetPassword": "Reset password",
+    "newPassword": "New password",
+    "tempPasswordTitle": "Temporary password",
+    "tempPasswordBody": "Give this to the user. It is shown once — they should change it after signing in.",
+    "confirmDisable": "Disable this account? They will be signed out and cannot sign back in.",
+    "userHasPassword": "Password set",
+    "userNoPassword": "Google only",
+    "newOrgOption": "New organization",
+    "newOrgHint": "Leave as-is to give them their own organization on a trial."
   },
   "defects": {
     "crazing": "Crazing",

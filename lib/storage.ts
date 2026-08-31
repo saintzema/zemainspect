@@ -1,5 +1,7 @@
 import { put } from "@vercel/blob";
 
+import { env, hasEnv } from "@/lib/env";
+
 /**
  * Persist an inspected frame.
  *
@@ -13,7 +15,7 @@ export async function storeInspectionImage(
   buffer: Buffer,
   contentType: string,
 ): Promise<string | null> {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) return null;
+  if (!hasEnv("BLOB_READ_WRITE_TOKEN")) return null;
 
   const extension = contentType.includes("png")
     ? "png"
@@ -28,7 +30,7 @@ export async function storeInspectionImage(
       {
         access: "public",
         contentType,
-        token: process.env.BLOB_READ_WRITE_TOKEN,
+        token: env("BLOB_READ_WRITE_TOKEN"),
         addRandomSuffix: false,
       },
     );

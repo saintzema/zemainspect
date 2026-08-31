@@ -8,6 +8,7 @@ import {
   Gauge,
   LayoutDashboard,
   Share2,
+  Users,
 } from "lucide-react";
 
 import { useTranslation } from "@/lib/i18n/language-context";
@@ -16,6 +17,7 @@ import { cn } from "@/lib/utils";
 const LINKS = [
   { href: "/admin", key: "admin.overview", icon: LayoutDashboard },
   { href: "/admin/organizations", key: "admin.organizations", icon: Building2 },
+  { href: "/admin/users", key: "admin.users", icon: Users },
   { href: "/admin/subscriptions", key: "admin.subscriptions", icon: CreditCard },
   { href: "/admin/inspections", key: "admin.inspections", icon: Gauge },
   { href: "/admin/referrals", key: "admin.referrals", icon: Share2 },

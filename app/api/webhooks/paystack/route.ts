@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { syncSubscription } from "@/lib/billing/sync";
 import {
-  tierForPaystackPlanCode,
+  resolveTierFromEvent,
   verifyPaystackSignature,
 } from "@/lib/billing/paystack";
 
@@ -44,8 +44,18 @@ export async function POST(request: Request) {
         if (!organizationId) break;
 
         const planCode = readPlanCode(data);
-        const tier = planCode ? tierForPaystackPlanCode(planCode) : null;
-        if (!tier) break;
+        const tier = await resolveTierFromEvent(
+          planCode,
+          data.metadata as Record<string, unknown> | undefined,
+        );
+        if (!tier) {
+          // Better to shout than to silently pocket a payment and leave the
+          // customer on a trial.
+          console.error(
+            `Paystack ${event.event}: could not map plan "${planCode}" to a tier`,
+          );
+          break;
+        }
 
         await syncSubscription({
           organizationId,

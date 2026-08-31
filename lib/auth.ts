@@ -2,6 +2,7 @@ import type { NextAuthOptions, Session } from "next-auth";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import GoogleProvider from "next-auth/providers/google";
 import EmailProvider from "next-auth/providers/email";
+import CredentialsProvider from "next-auth/providers/credentials";
 import type { Adapter } from "next-auth/adapters";
 import { getServerSession } from "next-auth/next";
 
@@ -10,6 +11,8 @@ import { randomInt } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { TRIAL_DAYS, TRIAL_INSPECTIONS } from "@/lib/plans";
 import type { Role } from "@/lib/generated/prisma";
+import { verifyPassword } from "@/lib/password";
+import { env, envOr, hasEnv } from "@/lib/env";
 import {
   OTP_LENGTH,
   OTP_TTL_MINUTES,
@@ -35,13 +38,68 @@ declare module "next-auth" {
 function buildProviders() {
   const providers: NextAuthOptions["providers"] = [];
 
-  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-    providers.push(
-      GoogleProvider({
-        clientId: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      }),
-    );
+  /*
+   * Email + password — the primary way factory staff sign in.
+   *
+   * Chosen over a one-time code as the default because it does not depend on
+   * email reaching the user at all. Deliverability to Chinese corporate hosts
+   * is genuinely unreliable, and a QC lead who cannot receive mail on the shop
+   * floor still needs to get into the dashboard at the start of a shift.
+   */
+  providers.push(
+    CredentialsProvider({
+      id: "credentials",
+      name: "Email and password",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials) {
+        const email = credentials?.email?.trim().toLowerCase();
+        const password = credentials?.password;
+        if (!email || !password) return null;
+
+        const user = await prisma.user.findUnique({
+          where: { email },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            image: true,
+            passwordHash: true,
+            disabledAt: true,
+          },
+        });
+
+        // verifyPassword runs a real bcrypt comparison even when there is no
+        // hash, so a missing account, an OAuth-only account and a wrong
+        // password all take the same time and return the same answer. Never
+        // tell the caller which of the three it was.
+        const valid = await verifyPassword(password, user?.passwordHash);
+        if (!user || !valid) return null;
+
+        // A disabled account is refused after the password check, so
+        // "disabled" is not observable without valid credentials.
+        if (user.disabledAt) return null;
+
+        await prisma.user
+          .update({ where: { id: user.id }, data: { lastActiveAt: new Date() } })
+          .catch(() => undefined);
+
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+        };
+      },
+    }),
+  );
+
+  const googleId = env("GOOGLE_CLIENT_ID");
+  const googleSecret = env("GOOGLE_CLIENT_SECRET");
+  if (googleId && googleSecret) {
+    providers.push(GoogleProvider({ clientId: googleId, clientSecret: googleSecret }));
   }
 
   /*
@@ -62,23 +120,23 @@ function buildProviders() {
    * Omitted entirely when SMTP is unconfigured, so the app still boots on
    * OAuth alone rather than presenting a form that silently does nothing.
    */
-  if (process.env.EMAIL_SERVER_HOST && process.env.EMAIL_FROM) {
+  if (hasEnv("EMAIL_SERVER_HOST") && hasEnv("EMAIL_FROM")) {
     providers.push(
       EmailProvider({
         server: {
-          host: process.env.EMAIL_SERVER_HOST,
-          port: Number(process.env.EMAIL_SERVER_PORT ?? 587),
+          host: env("EMAIL_SERVER_HOST"),
+          port: Number(envOr("EMAIL_SERVER_PORT", "587")),
           // Port 465 is implicit TLS; 587 upgrades via STARTTLS.
-          secure: Number(process.env.EMAIL_SERVER_PORT ?? 587) === 465,
+          secure: Number(envOr("EMAIL_SERVER_PORT", "587")) === 465,
           auth:
-            process.env.EMAIL_SERVER_USER && process.env.EMAIL_SERVER_PASSWORD
+            hasEnv("EMAIL_SERVER_USER") && hasEnv("EMAIL_SERVER_PASSWORD")
               ? {
-                  user: process.env.EMAIL_SERVER_USER,
-                  pass: process.env.EMAIL_SERVER_PASSWORD,
+                  user: env("EMAIL_SERVER_USER"),
+                  pass: env("EMAIL_SERVER_PASSWORD"),
                 }
               : undefined,
         },
-        from: process.env.EMAIL_FROM,
+        from: env("EMAIL_FROM"),
 
         // Short-lived because the code is short. A 24-hour default (NextAuth's)
         // would leave a 6-digit secret guessable for a whole day.
@@ -116,22 +174,21 @@ function buildProviders() {
 
 /** True when email sign-in is actually available on this deployment. */
 export function emailSignInEnabled(): boolean {
-  return !!(process.env.EMAIL_SERVER_HOST && process.env.EMAIL_FROM);
+  return hasEnv("EMAIL_SERVER_HOST") && hasEnv("EMAIL_FROM");
 }
 
 /** True when Google sign-in is actually available on this deployment. */
 export function googleSignInEnabled(): boolean {
-  return !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+  return hasEnv("GOOGLE_CLIENT_ID") && hasEnv("GOOGLE_CLIENT_SECRET");
 }
 
 /**
  * Give a brand-new user their own organization on a 14-day trial, and make the
  * configured founder address a SUPER_ADMIN.
  */
-async function provisionNewUser(userId: string, email: string, name?: string | null) {
-  const isFounder =
-    !!process.env.ADMIN_EMAIL &&
-    email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase();
+export async function provisionNewUser(userId: string, email: string, name?: string | null) {
+  const adminEmail = env("ADMIN_EMAIL");
+  const isFounder = !!adminEmail && email.toLowerCase() === adminEmail.toLowerCase();
 
   const orgName = name?.trim() || email.split("@")[0] || "My factory";
   const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
@@ -164,7 +221,17 @@ async function provisionNewUser(userId: string, email: string, name?: string | n
 export const authOptions: NextAuthOptions = {
   adapter: PrismaAdapter(prisma) as Adapter,
   providers: buildProviders(),
-  session: { strategy: "database" },
+  /*
+   * JWT rather than database sessions: NextAuth's Credentials provider does
+   * not support database sessions at all. The adapter still persists users and
+   * OAuth accounts — only the session itself moves into a signed cookie.
+   *
+   * Role and organization are deliberately NOT trusted from the token. They
+   * are re-read from the database on every session lookup (see the session
+   * callback), so an admin disabling an account or changing a role takes
+   * effect immediately instead of waiting for a stale token to expire.
+   */
+  session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 },
   pages: {
     signIn: "/signin",
     verifyRequest: "/signin/check-email",
@@ -186,31 +253,66 @@ export const authOptions: NextAuthOptions = {
     },
   },
   callbacks: {
-    async session({ session, user }) {
+    /**
+     * Carry only the user id in the token. Everything authorisation depends on
+     * is re-read from the database in `session` below.
+     */
+    async jwt({ token, user }) {
+      if (user?.id) token.sub = user.id;
+      return token;
+    },
+
+    /**
+     * Resolve the session from the database on every lookup.
+     *
+     * Role, organization and disabled state are deliberately not read from the
+     * JWT. A signed token is tamper-proof but it is a *snapshot*: if an admin
+     * demotes someone or disables an account, a token-derived session would
+     * keep the old privileges until it expired. Paying one indexed primary-key
+     * lookup per request buys immediate revocation, which is the behaviour an
+     * admin reasonably expects from a "disable user" button.
+     *
+     * Returning a session with no user id makes every `requireOrgSession` /
+     * `requireSuperAdmin` guard fail closed.
+     */
+    async session({ session, token }) {
+      const userId = token.sub;
+      if (!userId) return session;
+
       const record = await prisma.user.findUnique({
-        where: { id: user.id },
+        where: { id: userId },
         select: {
           id: true,
           email: true,
+          name: true,
+          image: true,
           role: true,
           organizationId: true,
           preferredLanguage: true,
+          disabledAt: true,
         },
       });
-      if (record) {
-        session.user = {
-          ...session.user,
-          id: record.id,
-          email: record.email,
-          role: record.role,
-          organizationId: record.organizationId,
-          preferredLanguage: record.preferredLanguage,
-        };
+
+      // Deleted or disabled since the token was issued: hand back a session
+      // with no identity rather than a privileged one.
+      if (!record || record.disabledAt) {
+        return { ...session, user: undefined } as unknown as Session;
       }
+
+      session.user = {
+        ...session.user,
+        id: record.id,
+        email: record.email,
+        name: record.name,
+        image: record.image,
+        role: record.role,
+        organizationId: record.organizationId,
+        preferredLanguage: record.preferredLanguage,
+      };
       return session;
     },
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: env("NEXTAUTH_SECRET"),
 };
 
 export function auth(): Promise<Session | null> {
