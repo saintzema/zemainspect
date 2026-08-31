@@ -109,7 +109,18 @@
     "continueGoogle": "使用 Google 继续",
     "checkEmailTitle": "请查收邮件",
     "checkEmailBody": "我们已发送登录链接，有效期 24 小时。",
-    "noProviders": "此部署尚未配置任何登录方式。"
+    "noProviders": "此部署尚未配置任何登录方式。",
+    "otpTitle": "输入验证码",
+    "otpBody": "我们已向 {email} 发送 6 位验证码，10 分钟内有效。",
+    "otpLabel": "登录验证码",
+    "otpVerify": "验证并登录",
+    "otpResend": "重新发送验证码",
+    "otpResent": "新验证码已发送",
+    "otpWrongEmail": "更换邮箱地址",
+    "otpInvalid": "验证码无效或已过期，请重新获取。",
+    "otpSendFailed": "验证码发送失败，请检查邮箱地址后重试。",
+    "sendCode": "发送登录验证码",
+    "noEmailProvider": "此部署尚未配置邮箱登录。"
   },
   "onboarding": {
     "title": "配置您的第一条产线",

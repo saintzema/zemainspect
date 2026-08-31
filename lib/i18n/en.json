@@ -109,7 +109,18 @@
     "continueGoogle": "Continue with Google",
     "checkEmailTitle": "Check your email",
     "checkEmailBody": "We sent a sign-in link. It expires in 24 hours.",
-    "noProviders": "No sign-in method is configured on this deployment yet."
+    "noProviders": "No sign-in method is configured on this deployment yet.",
+    "otpTitle": "Enter your code",
+    "otpBody": "We sent a 6-digit code to {email}. It expires in 10 minutes.",
+    "otpLabel": "Sign-in code",
+    "otpVerify": "Verify and sign in",
+    "otpResend": "Send a new code",
+    "otpResent": "New code sent",
+    "otpWrongEmail": "Use a different email",
+    "otpInvalid": "That code is not valid or has expired. Request a new one.",
+    "otpSendFailed": "We could not send the code. Check the address and try again.",
+    "sendCode": "Send sign-in code",
+    "noEmailProvider": "Email sign-in is not configured on this deployment yet."
   },
   "onboarding": {
     "title": "Set up your first line",

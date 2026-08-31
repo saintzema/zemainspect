@@ -147,7 +147,7 @@ the code refuses a software-emulated WebGPU adapter, which benchmarked 33×
 | App | Next.js 14 App Router, TypeScript |
 | Styling | Tailwind, custom glassmorphism system on CSS variables |
 | Database | Postgres (Neon), Prisma |
-| Auth | NextAuth — magic link + Google |
+| Auth | NextAuth — 6-digit email code + Google |
 | Inference | `onnxruntime-node` (server) · `onnxruntime-web` (browser) |
 | Billing | Paystack + Stripe |
 | Charts | Recharts |
