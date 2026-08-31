@@ -117,3 +117,14 @@ unauthenticated calls when it is set.
   and succeeding would only bloat the deploy.
 - **Cold starts.** The first server inference after a cold start pays session
   creation (~1–2 s). The edge path avoids this entirely after the first load.
+- **A missing `NEXTAUTH_URL` used to hard-crash the build.** NextAuth throws
+  `new URL('')` at module-load time — not inside any function, so no try/catch
+  can save it — the instant it's imported on a route Next.js tries to
+  statically pre-render, if `NEXTAUTH_URL` resolves to an empty string. That
+  took down every non-`force-dynamic` page (marketing, sign-in, onboarding)
+  from one missing env var. `next.config.mjs` now falls back to Vercel's own
+  `VERCEL_URL` / `VERCEL_PROJECT_PRODUCTION_URL` when `NEXTAUTH_URL` is unset,
+  so a forgotten env var degrades instead of hard-failing the deploy. Still
+  set `NEXTAUTH_URL` and `NEXT_PUBLIC_APP_URL` explicitly in Production —
+  Google's OAuth redirect URI has to be registered against a real, known
+  domain regardless of this fallback.

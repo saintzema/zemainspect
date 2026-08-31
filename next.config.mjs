@@ -1,5 +1,36 @@
+/**
+ * NextAuth throws a hard `new URL('')` crash — at MODULE LOAD time, not
+ * inside any function we could wrap in try/catch — the moment it is imported
+ * on a route that Next.js tries to statically pre-render, if NEXTAUTH_URL
+ * resolves to an empty string. That takes down every non-force-dynamic page
+ * in the app (marketing, sign-in, onboarding) with one missing env var.
+ *
+ * The correct fix is always to set NEXTAUTH_URL explicitly — Google's OAuth
+ * redirect URI has to be registered against a real, known domain regardless.
+ * But Vercel gives every deployment a working URL for free (VERCEL_URL for
+ * previews, VERCEL_PROJECT_PRODUCTION_URL for the stable production alias),
+ * so there's no reason a forgotten env var should ever hard-crash a build
+ * when a correct fallback is one line away.
+ */
+function inferredAppUrl() {
+  if (process.env.NEXTAUTH_URL) return process.env.NEXTAUTH_URL;
+  if (process.env.VERCEL_ENV === "production" && process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return undefined;
+}
+
+const appUrl = inferredAppUrl();
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    // Only fills in what's missing — an explicitly-set NEXTAUTH_URL always
+    // wins, since process.env.NEXTAUTH_URL is read first above.
+    ...(appUrl ? { NEXTAUTH_URL: appUrl, NEXT_PUBLIC_APP_URL: appUrl } : {}),
+  },
+
   experimental: {
     /*
      * These packages must stay outside the webpack bundle:
