@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { requireOrgSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { env } from "@/lib/env";
 import { billingProvider } from "@/lib/billing";
 
 export const runtime = "nodejs";
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Billing is not configured" }, { status: 503 });
   }
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(request.url).origin;
+  const appUrl = env("NEXT_PUBLIC_APP_URL") ?? new URL(request.url).origin;
 
   try {
     const url = await provider.createPortalLink({

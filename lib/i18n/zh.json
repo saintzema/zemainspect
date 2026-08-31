@@ -120,7 +120,24 @@
     "otpInvalid": "验证码无效或已过期，请重新获取。",
     "otpSendFailed": "验证码发送失败，请检查邮箱地址后重试。",
     "sendCode": "发送登录验证码",
-    "noEmailProvider": "此部署尚未配置邮箱登录。"
+    "noEmailProvider": "此部署尚未配置邮箱登录。",
+    "passwordLabel": "密码",
+    "passwordPlaceholder": "至少 10 个字符",
+    "signInAction": "登录",
+    "signUpAction": "创建账户",
+    "noAccount": "还没有账户？",
+    "haveAccount": "已有账户？",
+    "createOne": "立即创建",
+    "signInInstead": "去登录",
+    "signUpTitle": "创建 ZemaInspect 账户",
+    "signUpSubtitle": "14 天免费试用，无需绑定银行卡。",
+    "nameLabel": "您的姓名",
+    "namePlaceholder": "质检主管",
+    "invalidCredentials": "邮箱或密码不正确。",
+    "signUpFailed": "账户创建失败。",
+    "emailCodeInstead": "改用邮箱验证码登录",
+    "passwordInstead": "改用密码登录",
+    "accountDisabled": "此账户已被停用，请联系管理员。"
   },
   "onboarding": {
     "title": "配置您的第一条产线",
@@ -254,7 +271,15 @@
     "statusPAST_DUE": "扣款失败",
     "statusCANCELLED": "已取消",
     "pastDueWarning": "上次扣款失败，请更新支付方式以免服务中断。",
-    "manualAccess": "您的账户已获赠 {tier} 权限，有效期至 {date}。"
+    "manualAccess": "您的账户已获赠 {tier} 权限，有效期至 {date}。",
+    "alipayTitle": "支付宝付款",
+    "alipayBody": "面向中国客户。扫码支付当月费用，并在转账备注中填写参考编号。",
+    "alipayQrAlt": "支付宝收款二维码",
+    "alipayReference": "参考编号",
+    "alipayStep1": "打开支付宝并扫描二维码。",
+    "alipayStep2": "输入所选套餐的金额，并将参考编号粘贴到备注中。",
+    "alipayStep3": "将付款截图发送至 {contact}。",
+    "alipayManualNote": "支付宝付款需人工确认，我们收到转账后即开通套餐，通常在一个工作日内完成。银行卡支付则立即生效。"
   },
   "team": {
     "title": "团队",
@@ -273,7 +298,8 @@
     "remove": "移除",
     "confirmRemove": "将该成员移出组织？",
     "inviteSent": "邀请已发送至 {email}",
-    "onlyOwner": "只有所有者可以变更团队成员。"
+    "onlyOwner": "只有所有者可以变更团队成员。",
+    "roleSUPER_ADMIN": "超级管理员"
   },
   "settings": {
     "title": "设置",
@@ -337,7 +363,28 @@
     "creditStatus": "赠送月",
     "pending": "待发放",
     "applied": "已发放",
-    "noAccess": "您无权访问此区域。"
+    "noAccess": "您无权访问此区域。",
+    "users": "用户管理",
+    "usersSubtitle": "所有可登录的用户（跨全部组织）。",
+    "createUser": "创建用户",
+    "userEmail": "邮箱",
+    "userRole": "角色",
+    "userOrg": "组织",
+    "userStatus": "状态",
+    "userCreated": "创建时间",
+    "userActive": "正常",
+    "userDisabled": "已停用",
+    "disableUser": "停用",
+    "enableUser": "启用",
+    "resetPassword": "重置密码",
+    "newPassword": "新密码",
+    "tempPasswordTitle": "临时密码",
+    "tempPasswordBody": "请将此密码交给用户。仅显示一次，建议其登录后立即修改。",
+    "confirmDisable": "确认停用此账户？该用户将被登出且无法再次登录。",
+    "userHasPassword": "已设密码",
+    "userNoPassword": "仅 Google",
+    "newOrgOption": "新建组织",
+    "newOrgHint": "保持默认将为其创建独立组织并开启试用。"
   },
   "defects": {
     "crazing": "龟裂",

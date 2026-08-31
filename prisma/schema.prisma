@@ -63,6 +63,13 @@ model User {
   preferredLanguage String    @default("en") // "en" | "zh"
   role              Role      @default(OWNER)
 
+  // bcrypt hash. Null for accounts created through Google OAuth, which have
+  // no password of ours to check — those users sign in through Google only,
+  // unless an admin later sets one for them.
+  passwordHash String?
+  // Set to lock an account out without deleting it or losing its audit trail.
+  disabledAt   DateTime?
+
   organizationId String?
   organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 

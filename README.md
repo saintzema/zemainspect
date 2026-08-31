@@ -182,9 +182,30 @@ tests/                decode maths + letterbox geometry
 ```bash
 npm run dev         # dev server (copies the ORT runtime first)
 npm run build       # prisma generate + migrate deploy + next build
-npm test            # vitest — 22 tests
+npm test            # vitest — 47 tests
 npm run typecheck
 ```
+
+## Accounts and the admin console
+
+Sign in with an email and password at `/signin`, or create one at `/signup`. A
+one-time email code and Google sign-in are offered as well, when the deployment
+is configured for them.
+
+The admin console is at **`/admin`**, gated on the account's role being
+`SUPER_ADMIN` — there are no separate admin credentials and no default password.
+Set `ADMIN_EMAIL` to the address you sign up with and that account becomes the
+first admin. Manage everyone else from `/admin/users`.
+
+See [docs/ACCOUNTS.md](docs/ACCOUNTS.md).
+
+## Payments
+
+Paystack for Nigeria, Stripe for everywhere else, and an Alipay QR code for
+China that settles by hand. Paystack plans are created automatically — you only
+need to set `PAYSTACK_SECRET_KEY`.
+
+See [docs/PAYMENTS.md](docs/PAYMENTS.md).
 
 ## Deployment
 

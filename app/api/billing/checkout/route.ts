@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { requireOrgSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { env } from "@/lib/env";
 import { billingProvider, configuredProviders, defaultProviderFor } from "@/lib/billing";
 import { BillingNotConfiguredError } from "@/lib/billing/types";
 
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? new URL(request.url).origin;
+  const appUrl = env("NEXT_PUBLIC_APP_URL") ?? new URL(request.url).origin;
 
   try {
     const checkout = await provider.createCheckout({
@@ -67,6 +68,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     console.error("Checkout failed:", err);
-    return NextResponse.json({ error: "Could not start checkout" }, { status: 502 });
+    /*
+     * Hand the owner the provider's own message rather than a generic string.
+     * "Could not start checkout" is unactionable — it cannot distinguish a bad
+     * API key from a currency the account is not enabled for, and the person
+     * seeing it is the account owner who can fix either. The message comes
+     * from the provider's API and carries no credentials of ours; the request
+     * is already restricted to OWNER and SUPER_ADMIN above.
+     */
+    const detail = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      { error: `Could not start checkout. ${detail}`.slice(0, 400) },
+      { status: 502 },
+    );
   }
 }

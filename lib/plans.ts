@@ -6,6 +6,16 @@ export interface PlanDefinition {
   priceUsdCents: number | null;
   /** Monthly price in CNY fen, for the Chinese pricing table. */
   priceCnyFen: number | null;
+  /**
+   * Monthly price in NGN kobo, for Paystack.
+   *
+   * Held as its own number rather than converted from USD at request time: a
+   * price that drifts with the exchange rate is impossible to quote to a
+   * customer, and Paystack bills in whole naira. Adjust deliberately when the
+   * rate moves far enough to matter. Overridable per deployment with
+   * PAYSTACK_PRICE_STARTER_KOBO / PAYSTACK_PRICE_PRO_KOBO.
+   */
+  priceNgnKobo: number | null;
   monthlyInspectionLimit: number;
   cameraLines: number | null; // null = unlimited
   apiAccess: boolean;
@@ -24,6 +34,7 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     tier: "TRIAL",
     priceUsdCents: 0,
     priceCnyFen: 0,
+    priceNgnKobo: 0,
     monthlyInspectionLimit: TRIAL_INSPECTIONS,
     cameraLines: 1,
     apiAccess: true,
@@ -35,6 +46,8 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     tier: "STARTER",
     priceUsdCents: 4900,
     priceCnyFen: 35000,
+    // ₦75,000/month — set against $49 at roughly ₦1,530/$.
+    priceNgnKobo: 7_500_000,
     monthlyInspectionLimit: 5_000,
     cameraLines: 3,
     apiAccess: true,
@@ -47,6 +60,8 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     tier: "PRO",
     priceUsdCents: 14900,
     priceCnyFen: 105000,
+    // ₦225,000/month — set against $149 at roughly ₦1,510/$.
+    priceNgnKobo: 22_500_000,
     monthlyInspectionLimit: 25_000,
     cameraLines: null,
     apiAccess: true,
@@ -59,6 +74,7 @@ export const PLANS: Record<PlanTier, PlanDefinition> = {
     tier: "ENTERPRISE",
     priceUsdCents: null,
     priceCnyFen: null,
+    priceNgnKobo: null,
     monthlyInspectionLimit: Number.MAX_SAFE_INTEGER,
     cameraLines: null,
     apiAccess: true,
