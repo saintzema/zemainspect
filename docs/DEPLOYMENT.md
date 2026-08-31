@@ -91,6 +91,19 @@ unauthenticated calls when it is set.
 
 1. Sign up → an Organization is created on a 14-day trial.
 2. Sign in as `ADMIN_EMAIL` → `/admin` is reachable (violet accent).
+
+### Verifying a deploy
+
+```bash
+npm run smoke https://your-domain
+```
+
+Add credentials to cover the signed-in surfaces — the edge inspector lives
+behind auth, so an anonymous run cannot see whether it actually works:
+
+```bash
+SMOKE_EMAIL=you@co.com SMOKE_PASSWORD=… npm run smoke https://your-domain
+```
 3. Onboarding → copy the API key → `POST /api/v1/inspect` returns detections.
 4. `/dashboard` shows the result; **Start camera** runs edge inference.
 5. Upgrade via Paystack or Stripe test mode → the webhook flips the org to

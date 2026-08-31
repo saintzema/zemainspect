@@ -4,6 +4,7 @@
  *
  *   node scripts/smoke-production.mjs https://zemainspect.vercel.app
  *   node scripts/smoke-production.mjs https://zemainspect.vercel.app zi_live_yourkey
+ *   SMOKE_EMAIL=you@co.com SMOKE_PASSWORD=... node scripts/smoke-production.mjs <url>
  *
  * Without an API key it verifies everything reachable anonymously: pages
  * render, protected routes redirect, the API rejects unauthenticated calls,
@@ -11,11 +12,19 @@
  * leaking. Pass an API key and it additionally runs a REAL inspection and
  * checks the detections and latency a factory would see.
  *
+ * Set SMOKE_EMAIL and SMOKE_PASSWORD and it also signs in as a real user and
+ * checks the signed-in surfaces — most importantly that the edge inspector is
+ * handed a model URL that actually serves. That path is behind auth, so an
+ * anonymous run cannot see it, which is exactly how a blank MODEL_FILE once
+ * reached production and only failed when an operator pressed Start.
+ *
  * Exit code is non-zero if anything fails, so it can gate a deploy.
  */
 
 const base = (process.argv[2] || "").replace(/\/$/, "");
 const apiKey = process.argv[3];
+const smokeEmail = (process.env.SMOKE_EMAIL || "").trim();
+const smokePassword = process.env.SMOKE_PASSWORD || "";
 
 if (!base) {
   console.error("usage: node scripts/smoke-production.mjs <url> [api-key]");
@@ -39,14 +48,31 @@ function section(t) {
   console.log(`\n\x1b[1m${t}\x1b[0m`);
 }
 
+// NextAuth sign-in is CSRF-protected and cookie-based, so requests have to
+// carry state across calls once we start authenticating.
+const jar = new Map();
+const cookieHeader = () => [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+function storeCookies(res) {
+  for (const c of res.headers.getSetCookie?.() ?? []) {
+    const [pair] = c.split(";");
+    const i = pair.indexOf("=");
+    if (i > 0) jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+  }
+}
+
 async function req(path, init = {}) {
   const started = Date.now();
   try {
     const res = await fetch(`${base}${path}`, {
       redirect: "manual",
       ...init,
-      headers: { "User-Agent": "ZemaInspect-SmokeTest/1.0", ...(init.headers ?? {}) },
+      headers: {
+        "User-Agent": "ZemaInspect-SmokeTest/1.0",
+        ...(jar.size ? { cookie: cookieHeader() } : {}),
+        ...(init.headers ?? {}),
+      },
     });
+    storeCookies(res);
     return { res, ms: Date.now() - started };
   } catch (err) {
     return { error: err.message, ms: Date.now() - started };
@@ -252,6 +278,90 @@ if (apiKey) {
   section("7. Real inference — SKIPPED");
   console.log("  Pass an API key to test actual inference:");
   console.log("    node scripts/smoke-production.mjs <url> zi_live_...");
+}
+
+if (smokeEmail && smokePassword) {
+  section("8. Signed in — the surfaces an operator actually uses");
+
+  const csrf = await req("/api/auth/csrf");
+  let token = null;
+  if (csrf.res?.ok) {
+    token = (await csrf.res.json().catch(() => ({}))).csrfToken ?? null;
+  }
+  if (!token) bad("csrf token", "could not fetch one");
+
+  if (token) {
+    await req("/api/auth/callback/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        csrfToken: token,
+        email: smokeEmail,
+        password: smokePassword,
+        callbackUrl: `${base}/dashboard`,
+        json: "true",
+      }),
+    });
+
+    const session = await req("/api/auth/session");
+    const who = session.res?.ok ? await session.res.json().catch(() => ({})) : {};
+
+    if (who?.user?.email) {
+      ok("password sign-in works", `${who.user.email} (${who.user.role})`);
+
+      const dash = await req("/dashboard");
+      if (dash.res?.status !== 200) {
+        bad("dashboard renders", `HTTP ${dash.res?.status}`);
+      } else {
+        ok("dashboard renders");
+        const html = await dash.res.text();
+
+        // The bug that reached production: a blank MODEL_FILE made this
+        // "/models/", so the camera UI rendered and then 404'd on Start.
+        const urls = [
+          ...new Set([...html.matchAll(/\\?"(\/models\/[^"\\]*)\\?"/g)].map((m) => m[1])),
+        ];
+        if (urls.length === 0) {
+          bad("edge inspector has a model", "no model URL in the page — inspector is hidden");
+        } else if (urls.includes("/models/")) {
+          bad("edge inspector model URL", 'got "/models/" — a blank MODEL_FILE, this 404s');
+        } else {
+          ok("edge inspector model URL", urls.join(", "));
+          for (const url of urls) {
+            const r = await req(url, {
+              headers: { Range: "bytes=0-1023", "Accept-Encoding": "identity" },
+            });
+            if (!r.res || (r.res.status !== 200 && r.res.status !== 206)) {
+              bad(`${url} downloads`, `HTTP ${r.res?.status} — this is what the operator sees`);
+              continue;
+            }
+            const head = new Uint8Array(await r.res.arrayBuffer());
+            const total = Number(
+              (r.res.headers.get("content-range") || "").match(/\/(\d+)$/)?.[1] ?? 0,
+            );
+            if (head[0] !== 0x08) bad(`${url} is an ONNX model`, "not a ModelProto");
+            else ok(`${url} downloads`, `${(total / 1024 / 1024).toFixed(1)} MB`);
+          }
+        }
+      }
+
+      const billing = await req("/billing");
+      if (billing.res?.status === 200) {
+        const html = await billing.res.text();
+        ok("billing renders");
+        if (/alipay|支付宝/i.test(html)) ok("Alipay option is live");
+        else console.log("  SKIP  Alipay option not shown — ALIPAY_QR_URL is unset");
+      } else {
+        bad("billing renders", `HTTP ${billing.res?.status}`);
+      }
+    } else {
+      bad("password sign-in works", "no session — check SMOKE_EMAIL / SMOKE_PASSWORD");
+    }
+  }
+} else {
+  section("8. Signed-in checks — SKIPPED");
+  console.log("  These cover the edge inspector, which is behind auth:");
+  console.log("    SMOKE_EMAIL=you@co.com SMOKE_PASSWORD=... npm run smoke <url>");
 }
 
 console.log(`\n${"─".repeat(56)}`);
