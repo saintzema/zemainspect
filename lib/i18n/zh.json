@@ -193,7 +193,13 @@
     "inferenceMs": "{value} 毫秒/帧",
     "uploadResults": "将结果上传至看板",
     "uploadResultsHint": "仅上传检测结果与小尺寸缩略图，不会上传完整画面。",
-    "modelMissing": "尚未部署模型。添加权重后即可启用边缘推理。"
+    "modelMissing": "尚未部署模型。添加权重后即可启用边缘推理。",
+    "sensitivity": "检测灵敏度",
+    "sensitivityHint": "调低可捕捉更细微、更小的缺陷，但误报也会增多。",
+    "muteAlerts": "静音提醒",
+    "unmuteAlerts": "开启提醒音",
+    "statusFail": "检测到缺陷",
+    "statusPass": "未发现缺陷"
   },
   "trends": {
     "title": "缺陷趋势",

@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, CircleStop, Cpu, TriangleAlert } from "lucide-react";
+import {
+  Camera,
+  CheckCircle2,
+  CircleStop,
+  Cpu,
+  TriangleAlert,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 
 import { useTranslation } from "@/lib/i18n/language-context";
 import {
@@ -19,11 +27,39 @@ import {
   runWebInference,
 } from "@/lib/inference/onnx-web";
 import { PRODUCT_CATEGORIES, labelFor } from "@/lib/inference/labels";
-import type { Detection } from "@/lib/inference/postprocess";
+import { DEFAULT_CONFIDENCE, type Detection } from "@/lib/inference/postprocess";
+import { playClearTone, playDefectAlert } from "@/lib/inference/alert-sound";
+import { severityColor, severityTone } from "@/lib/inference/severity";
+import { cn } from "@/lib/utils";
 import type { InferenceSession } from "onnxruntime-web";
 
 /** Upload at most one result every this many ms, to protect the plan quota. */
 const UPLOAD_THROTTLE_MS = 3000;
+
+/**
+ * Minimum time between alert sounds while defects keep appearing.
+ *
+ * Without this, a defect that sits in frame for several seconds — the normal
+ * case, since parts move past a fixed camera at line speed — would re-trigger
+ * the tone on every single inference, which is closer to a siren than an
+ * alert. A cooldown keeps it "something needs attention" rather than noise an
+ * operator learns to tune out.
+ */
+const ALERT_COOLDOWN_MS = 4000;
+
+/**
+ * Sensitivity range shown to the operator.
+ *
+ * Below DEFAULT_CONFIDENCE, more detections pass the threshold — including
+ * fainter, smaller or more ambiguous defects — at the cost of more false
+ * positives. This does not change what the model is capable of seeing; it
+ * changes how confident it has to be before a detection counts. Lowering it
+ * is the honest way to chase "catch the smallest defect" with a fixed model:
+ * trade precision for recall, visibly and reversibly, rather than silently.
+ */
+const MIN_SENSITIVITY = 0.1;
+const MAX_SENSITIVITY = 0.75;
+const SENSITIVITY_STEP = 0.05;
 
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 
@@ -37,7 +73,11 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const rafRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastUploadRef = useRef(0);
+  const lastAlertRef = useRef(0);
+  const wasFailingRef = useRef(false);
   const runningRef = useRef(false);
+  const sensitivityRef = useRef(DEFAULT_CONFIDENCE);
+  const soundEnabledRef = useRef(true);
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +87,17 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const [lineId, setLineId] = useState("");
   const [category, setCategory] = useState<(typeof PRODUCT_CATEGORIES)[number]>("steel");
   const [upload, setUpload] = useState(true);
+  const [sensitivity, setSensitivity] = useState(DEFAULT_CONFIDENCE);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  useEffect(() => {
+    sensitivityRef.current = sensitivity;
+  }, [sensitivity]);
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  const isFailing = status === "running" && detections.length > 0;
 
   const stop = useCallback(() => {
     runningRef.current = false;
@@ -56,6 +107,14 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
     streamRef.current = null;
     setStatus("ready");
     setFps(0);
+    setDetections([]);
+    wasFailingRef.current = false;
+
+    // The last frame's bounding boxes otherwise linger on screen after the
+    // camera has stopped, over a now-frozen video — a stale defect box on a
+    // dead feed reads as a detection that is still happening.
+    const canvas = overlayRef.current;
+    canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
   }, []);
 
   // Always release the camera when the operator navigates away.
@@ -71,24 +130,49 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       if (!ctx) return;
 
       ctx.clearRect(0, 0, width, height);
-      ctx.lineWidth = Math.max(2, Math.round(width / 320));
-      ctx.font = `${Math.max(12, Math.round(width / 40))}px system-ui, sans-serif`;
+      const lineWidth = Math.max(2, Math.round(width / 320));
+      const cornerLen = Math.max(12, Math.round(width / 40));
+      ctx.font = `600 ${Math.max(12, Math.round(width / 44))}px system-ui, sans-serif`;
       ctx.textBaseline = "top";
 
       for (const det of dets) {
         const [x, y, w, h] = det.bbox;
-        ctx.strokeStyle = "rgba(248, 113, 113, 0.95)";
-        ctx.strokeRect(x, y, w, h);
+        const color = severityColor(det.confidence);
+
+        // A faint glass fill inside the box, plus corner brackets rather than
+        // a plain rectangle — reads as an active targeting reticle rather
+        // than a static outline, and stays legible over a busy background.
+        ctx.fillStyle = color.replace(/[\d.]+\)$/, "0.12)");
+        ctx.fillRect(x, y, w, h);
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.lineCap = "round";
+        const c = Math.min(cornerLen, w / 2.5, h / 2.5);
+        const corners: Array<[number, number, number, number]> = [
+          [x, y, 1, 1],
+          [x + w, y, -1, 1],
+          [x, y + h, 1, -1],
+          [x + w, y + h, -1, -1],
+        ];
+        for (const [cx, cy, dx, dy] of corners) {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy + c * dy);
+          ctx.lineTo(cx, cy);
+          ctx.lineTo(cx + c * dx, cy);
+          ctx.stroke();
+        }
 
         const text = `${labelFor(det.type, language)} ${Math.round(det.confidence * 100)}%`;
         const metrics = ctx.measureText(text);
-        const padding = 4;
-        const boxH = Math.max(16, Math.round(width / 32));
+        const padding = 5;
+        const boxH = Math.max(18, Math.round(width / 30));
+        const labelY = Math.max(0, y - boxH);
 
-        ctx.fillStyle = "rgba(248, 113, 113, 0.95)";
-        ctx.fillRect(x, Math.max(0, y - boxH), metrics.width + padding * 2, boxH);
+        ctx.fillStyle = color;
+        ctx.fillRect(x, labelY, metrics.width + padding * 2, boxH);
         ctx.fillStyle = "#fff";
-        ctx.fillText(text, x + padding, Math.max(0, y - boxH) + 2);
+        ctx.fillText(text, x + padding, labelY + (boxH - Math.max(12, width / 44)) / 2);
       }
     },
     [language],
@@ -119,6 +203,8 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       await video.play();
 
       runningRef.current = true;
+      wasFailingRef.current = false;
+      lastAlertRef.current = 0;
       setStatus("running");
 
       let frames = 0;
@@ -137,10 +223,31 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               video.videoWidth,
               video.videoHeight,
               work,
+              sensitivityRef.current,
             );
+
+            // Stop() can land while this inference call is in flight — it
+            // clears the overlay and releases the camera, but this promise
+            // still resolves afterwards. Without this check, a frame that
+            // finishes after stop redraws a bounding box onto the now-frozen
+            // video, which reads as a defect that's still being detected.
+            if (!runningRef.current) return;
+
             setDetections(result.detections);
             setLatency(result.processingTimeMs);
             drawOverlay(result.detections, video.videoWidth, video.videoHeight);
+
+            const failingNow = result.detections.length > 0;
+            const now = Date.now();
+            if (failingNow) {
+              if (soundEnabledRef.current && now - lastAlertRef.current > ALERT_COOLDOWN_MS) {
+                lastAlertRef.current = now;
+                playDefectAlert();
+              }
+            } else if (wasFailingRef.current && soundEnabledRef.current) {
+              playClearTone();
+            }
+            wasFailingRef.current = failingNow;
 
             frames += 1;
             const elapsed = performance.now() - windowStart;
@@ -217,21 +324,43 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       title={t("edge.title")}
       description={t("edge.subtitle")}
       action={
-        status === "running" ? (
-          <GlassButton size="sm" variant="danger" onClick={stop}>
-            <CircleStop className="h-3.5 w-3.5" aria-hidden />
-            {t("edge.stop")}
-          </GlassButton>
-        ) : (
-          <GlassButton size="sm" onClick={() => void start()} loading={status === "loading"}>
-            <Camera className="h-3.5 w-3.5" aria-hidden />
-            {status === "loading" ? t("edge.loadingModel") : t("edge.start")}
-          </GlassButton>
-        )
+        <div className="flex items-center gap-2">
+          {status === "running" && (
+            <GlassButton
+              size="sm"
+              variant="ghost"
+              onClick={() => setSoundEnabled((v) => !v)}
+              aria-label={soundEnabled ? t("edge.muteAlerts") : t("edge.unmuteAlerts")}
+              title={soundEnabled ? t("edge.muteAlerts") : t("edge.unmuteAlerts")}
+            >
+              {soundEnabled ? (
+                <Volume2 className="h-3.5 w-3.5" aria-hidden />
+              ) : (
+                <VolumeX className="h-3.5 w-3.5" aria-hidden />
+              )}
+            </GlassButton>
+          )}
+          {status === "running" ? (
+            <GlassButton size="sm" variant="danger" onClick={stop}>
+              <CircleStop className="h-3.5 w-3.5" aria-hidden />
+              {t("edge.stop")}
+            </GlassButton>
+          ) : (
+            <GlassButton size="sm" onClick={() => void start()} loading={status === "loading"}>
+              <Camera className="h-3.5 w-3.5" aria-hidden />
+              {status === "loading" ? t("edge.loadingModel") : t("edge.start")}
+            </GlassButton>
+          )}
+        </div>
       }
     >
       <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-        <div className="relative overflow-hidden rounded-xl bg-black/80">
+        <div
+          className={cn(
+            "relative overflow-hidden rounded-xl bg-black/80 ring-2 ring-transparent transition-all duration-200",
+            isFailing && "animate-pulse ring-fail",
+          )}
+        >
           <video
             ref={videoRef}
             playsInline
@@ -243,13 +372,28 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
             className="pointer-events-none absolute inset-0 h-full w-full object-contain"
           />
           {status === "running" && (
-            <div className="absolute left-2 top-2 flex gap-1.5">
-              <Badge tone="accent">
-                <Cpu className="h-3 w-3" aria-hidden /> {edgeBackend()}
-              </Badge>
-              <Badge>{t("edge.fps", { value: fps })}</Badge>
-              <Badge>{t("edge.inferenceMs", { value: latency })}</Badge>
-            </div>
+            <>
+              <div className="absolute left-2 top-2 flex flex-wrap gap-1.5">
+                <Badge tone="accent">
+                  <Cpu className="h-3 w-3" aria-hidden /> {edgeBackend()}
+                </Badge>
+                <Badge>{t("edge.fps", { value: fps })}</Badge>
+                <Badge>{t("edge.inferenceMs", { value: latency })}</Badge>
+              </div>
+              <div className="absolute right-2 top-2">
+                {isFailing ? (
+                  <Badge tone="fail" className="animate-pulse px-2.5 py-1 text-xs font-semibold">
+                    <TriangleAlert className="h-3.5 w-3.5" aria-hidden />
+                    {t("edge.statusFail")}
+                  </Badge>
+                ) : (
+                  <Badge tone="pass" className="px-2.5 py-1 text-xs font-semibold">
+                    <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
+                    {t("edge.statusPass")}
+                  </Badge>
+                )}
+              </div>
+            </>
           )}
         </div>
 
@@ -281,6 +425,22 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
             </GlassSelect>
           </div>
 
+          <div>
+            <FieldLabel htmlFor="edge-sensitivity" hint={t("edge.sensitivityHint")}>
+              {t("edge.sensitivity")} — {Math.round(sensitivity * 100)}%
+            </FieldLabel>
+            <input
+              id="edge-sensitivity"
+              type="range"
+              min={MIN_SENSITIVITY}
+              max={MAX_SENSITIVITY}
+              step={SENSITIVITY_STEP}
+              value={sensitivity}
+              onChange={(event) => setSensitivity(Number(event.target.value))}
+              className="h-2 w-full cursor-pointer accent-[rgb(var(--accent))]"
+            />
+          </div>
+
           <label className="flex items-start gap-2 text-sm text-ink">
             <input
               type="checkbox"
@@ -299,7 +459,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
           {detections.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {detections.map((det, index) => (
-                <Badge key={index} tone="fail">
+                <Badge key={index} tone={severityTone(det.confidence)}>
                   {labelFor(det.type, language)} {Math.round(det.confidence * 100)}%
                 </Badge>
               ))}

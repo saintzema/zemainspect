@@ -193,7 +193,13 @@
     "inferenceMs": "{value} ms/frame",
     "uploadResults": "Send results to dashboard",
     "uploadResultsHint": "Only the detection result and a small thumbnail are uploaded, never the full frame.",
-    "modelMissing": "No model is deployed yet. Add weights to enable edge inference."
+    "modelMissing": "No model is deployed yet. Add weights to enable edge inference.",
+    "sensitivity": "Detection sensitivity",
+    "sensitivityHint": "Lower catches fainter, smaller defects — at the cost of more false alarms.",
+    "muteAlerts": "Mute alerts",
+    "unmuteAlerts": "Unmute alerts",
+    "statusFail": "Defect detected",
+    "statusPass": "No defects"
   },
   "trends": {
     "title": "Defect trends",
