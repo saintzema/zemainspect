@@ -242,14 +242,24 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error(t("edge.notSupported"));
       }
-
-      sessionRef.current ??= await loadWebSession(modelUrl);
       if (!workCanvasRef.current) workCanvasRef.current = document.createElement("canvas");
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "environment" },
-        audio: false,
-      });
+      /*
+       * Camera permission and model loading are independent concerns, so
+       * request both at once. Sequencing them — model first, camera second —
+       * means a slow or failing model load silently withholds the permission
+       * prompt an operator is staring at the screen waiting for, which reads
+       * as "the browser never asked for my camera" when the real story is
+       * "it never got that far."
+       */
+      const [stream, session] = await Promise.all([
+        navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "environment" },
+          audio: false,
+        }),
+        sessionRef.current ? Promise.resolve(sessionRef.current) : loadWebSession(modelUrl),
+      ]);
+      sessionRef.current = session;
       streamRef.current = stream;
 
       const video = videoRef.current;

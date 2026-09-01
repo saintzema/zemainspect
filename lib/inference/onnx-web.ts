@@ -155,8 +155,24 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
 
+  /*
+   * `.slice()` a fresh copy for every attempt — this is load-bearing, not
+   * defensive. With `wasm.proxy = true`, ORT hands the model bytes to a
+   * worker via `postMessage` with the underlying ArrayBuffer in the transfer
+   * list, which *detaches* it in this thread: a real hardware limitation of
+   * transferable objects, not an ORT quirk. Passing the same `bytes` to a
+   * second `InferenceSession.create()` call — exactly what the WebGPU→WASM
+   * fallback below does — hands the worker an already-detached buffer, which
+   * fails with "An ArrayBuffer is detached and could not be cloned." This
+   * reached production on real hardware whose browser actually offers
+   * WebGPU: the WebGPU attempt below consumes the one and only buffer, and
+   * the WASM fallback then has nothing valid left to send. It went unnoticed
+   * in earlier testing because that environment had no WebGPU adapter at
+   * all, so the fallback was always the *only* attempt made — never a
+   * second one on an already-spent buffer.
+   */
   const build = (provider: string) =>
-    ort.InferenceSession.create(bytes, {
+    ort.InferenceSession.create(bytes.slice(), {
       executionProviders: [provider as never],
       graphOptimizationLevel: "all",
     });
