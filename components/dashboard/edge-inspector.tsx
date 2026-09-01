@@ -98,6 +98,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [wide, setWide] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [loadingElapsedSec, setLoadingElapsedSec] = useState(0);
 
   useEffect(() => {
     sensitivityRef.current = sensitivity;
@@ -128,6 +129,25 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       return next;
     });
   };
+
+  /*
+   * A ticking counter while the model loads, not a bare spinner.
+   *
+   * A first-time load genuinely runs to 30-40+ seconds on a real network —
+   * onnxruntime-web's published WebGPU bundle always downloads and compiles a
+   * ~26 MB WASM runtime, a fixed cost of the library itself, not something
+   * this app's own network speed or code can shrink. A silent spinner for
+   * that long reads as frozen; a number that keeps moving reads as working.
+   */
+  useEffect(() => {
+    if (status !== "loading") {
+      setLoadingElapsedSec(0);
+      return;
+    }
+    const started = Date.now();
+    const id = setInterval(() => setLoadingElapsedSec(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [status]);
 
   // Reflect real browser fullscreen state, including exits the operator
   // triggers with Esc rather than this component's own button.
@@ -426,7 +446,9 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
           ) : (
             <GlassButton size="sm" onClick={() => void start()} loading={status === "loading"}>
               <Camera className="h-3.5 w-3.5" aria-hidden />
-              {status === "loading" ? t("edge.loadingModel") : t("edge.start")}
+              {status === "loading"
+                ? t("edge.loadingModelElapsed", { seconds: loadingElapsedSec })
+                : t("edge.start")}
             </GlassButton>
           )}
         </div>
@@ -566,6 +588,10 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
                 </Badge>
               ))}
             </div>
+          )}
+
+          {status === "loading" && loadingElapsedSec >= 5 && (
+            <p className="text-xs text-ink-muted">{t("edge.loadingModelHint")}</p>
           )}
 
           {error && (

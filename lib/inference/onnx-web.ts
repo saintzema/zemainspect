@@ -134,7 +134,28 @@ async function warmupSession(
 }
 
 const WEBGPU_INIT_TIMEOUT_MS = 8_000;
-const WASM_INIT_TIMEOUT_MS = 20_000;
+/**
+ * onnxruntime-web's published "webgpu" bundle hardcodes its WASM binary
+ * choice at the LIBRARY'S OWN build time — literally
+ * `false ? jsep : false ? jspi : true ? asyncify : plain` in the shipped
+ * source — to guarantee it runs on any browser without needing
+ * cross-origin-isolation headers. That constant means every load pays for
+ * the 25.7 MB asyncify build regardless of what this app's own headers or
+ * environment offer; there is no runtime condition here to influence.
+ *
+ * Measured directly (Playwright + CDP network throttling to a realistic
+ * ~4 Mbps / 40ms-latency connection, not this sandbox's instant localhost
+ * loopback): a genuine cold load — asyncify WASM plus the ~12 MB ONNX model —
+ * takes ~39s. That is not a hang; it is the real cost of running a full
+ * computer-vision model entirely client-side, paid once per fresh page load
+ * (the session is memoised after that — Stop/Start within the same page load
+ * is instant). 20s was tuned against localhost and always failed on a real
+ * connection; 45s left six seconds of margin over that measurement, which a
+ * connection any slower than 4 Mbps would still blow through. 90s gives an
+ * actually slow factory link a fair chance while still catching a true hang
+ * well short of the 30-minute reports this replaced.
+ */
+const WASM_INIT_TIMEOUT_MS = 90_000;
 
 async function createSession(modelUrl: string): Promise<InferenceSession> {
   const ort = await loadOrt();

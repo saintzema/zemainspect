@@ -205,7 +205,9 @@
     "widenPanel": "Widen panel",
     "narrowPanel": "Narrow panel",
     "fullscreen": "Full screen",
-    "exitFullscreen": "Exit full screen"
+    "exitFullscreen": "Exit full screen",
+    "loadingModelElapsed": "Loading model… {seconds}s",
+    "loadingModelHint": "First load can take up to a minute — it downloads and compiles the detection engine once per browser session. Every inspection after that runs in milliseconds, offline."
   },
   "trends": {
     "title": "Defect trends",

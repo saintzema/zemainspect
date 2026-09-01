@@ -205,7 +205,9 @@
     "widenPanel": "加宽面板",
     "narrowPanel": "还原面板",
     "fullscreen": "全屏",
-    "exitFullscreen": "退出全屏"
+    "exitFullscreen": "退出全屏",
+    "loadingModelElapsed": "正在加载模型… {seconds}秒",
+    "loadingModelHint": "首次加载最长可能需要一分钟——每个浏览器会话只需下载并编译一次检测引擎。此后每次检测都在毫秒级完成，且无需联网。"
   },
   "trends": {
     "title": "缺陷趋势",

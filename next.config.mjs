@@ -83,6 +83,41 @@ const nextConfig = {
           { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
         ],
       },
+      {
+        /*
+         * Cross-origin isolation, site-wide.
+         *
+         * onnxruntime-web ships only "threaded" WASM binaries — there is no
+         * plain single-threaded build in this version — and that binary
+         * needs `SharedArrayBuffer` to instantiate at all, which browsers
+         * only expose on a cross-origin-isolated page (COOP + COEP). Without
+         * it, ORT silently falls back to an "asyncify" build that emulates
+         * the same behaviour without shared memory — at roughly double the
+         * binary size (25.7 MB vs 13.9 MB) and measurably slower to compile.
+         * On a real network and real hardware that gap is what turned into
+         * "WASM session creation timed out after 20s" in production; on this
+         * sandbox's fast localhost loopback the difference is invisible,
+         * which is exactly why it went unnoticed until now.
+         *
+         * COEP is set to `credentialless` rather than `require-corp`: the
+         * strict mode blocks any cross-origin subresource whose origin
+         * hasn't opted in with its own CORP header, which would silently
+         * break the Vercel Blob-hosted inspection thumbnails
+         * (*.public.blob.vercel-storage.com) the moment this shipped.
+         * `credentialless` still unlocks SharedArrayBuffer, but only strips
+         * credentials from cross-origin requests rather than blocking them —
+         * fine here, since every cross-origin resource this app loads
+         * (public blob images) is unauthenticated anyway. Google sign-in and
+         * Paystack/Stripe checkout are unaffected either way: both are full
+         * top-level redirects, not embeds, and COOP/COEP only govern content
+         * loaded inside the page.
+         */
+        source: "/:path*",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
+        ],
+      },
     ];
   },
 };
