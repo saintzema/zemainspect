@@ -8,6 +8,7 @@ import {
   type Detection,
 } from "@/lib/inference/postprocess";
 import { letterboxToTensor } from "@/lib/inference/preprocess";
+import { withTimeout } from "@/lib/timeout";
 
 type InferenceSession = OrtWeb.InferenceSession;
 
@@ -132,6 +133,9 @@ async function warmupSession(
   return performance.now() - started;
 }
 
+const WEBGPU_INIT_TIMEOUT_MS = 8_000;
+const WASM_INIT_TIMEOUT_MS = 20_000;
+
 async function createSession(modelUrl: string): Promise<InferenceSession> {
   const ort = await loadOrt();
 
@@ -162,8 +166,8 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   // happily and then runs far slower than WASM, which on a production line
   // means a stalled inspection rather than a real-time one.
   if (await hasUsableGpu()) try {
-    const candidate = await build("webgpu");
-    const warmupMs = await warmupSession(candidate, ort);
+    const candidate = await withTimeout(build("webgpu"), WEBGPU_INIT_TIMEOUT_MS, "WebGPU session creation");
+    const warmupMs = await withTimeout(warmupSession(candidate, ort), WEBGPU_INIT_TIMEOUT_MS, "WebGPU warmup");
     if (warmupMs <= WEBGPU_WARMUP_BUDGET_MS) {
       activeBackend = "webgpu";
       return candidate;
@@ -173,13 +177,29 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
         `(budget ${WEBGPU_WARMUP_BUDGET_MS}ms) — likely software emulation. Using WASM.`,
     );
     await candidate.release?.();
-  } catch {
-    // No WebGPU at all; WASM is the answer.
+  } catch (err) {
+    // Timed out, threw, or there is no WebGPU at all — WASM is the answer
+    // either way, but a silent hang here is exactly the bug this guards
+    // against, so it is worth a trace even though we recover from it.
+    console.warn("[zemainspect] WebGPU backend unavailable, falling back to WASM:", err);
   }
 
-  const fallback = await build("wasm");
-  // Pay the one-off warmup here rather than on the operator's first frame.
-  await warmupSession(fallback, ort).catch(() => undefined);
+  let fallback: InferenceSession;
+  try {
+    fallback = await withTimeout(build("wasm"), WASM_INIT_TIMEOUT_MS, "WASM session creation");
+  } catch (err) {
+    throw new Error(
+      "Could not start the detection model in this browser. Try Chrome or Edge, " +
+        "disable strict tracking-protection or ad-blocking extensions for this site, " +
+        `and check that the network allows .wasm downloads. (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+    );
+  }
+  // Pay the one-off warmup here rather than on the operator's first frame. A
+  // failed or hung warmup does not fail startup — the session already works,
+  // it is just measured cold on the first real frame instead.
+  await withTimeout(warmupSession(fallback, ort), WASM_INIT_TIMEOUT_MS, "WASM warmup").catch(() => undefined);
   activeBackend = "wasm";
   return fallback;
 }

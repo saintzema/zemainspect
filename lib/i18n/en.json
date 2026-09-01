@@ -38,7 +38,9 @@
     "signOut": "Sign out",
     "pricing": "Pricing",
     "docs": "Docs",
-    "adminPanel": "Admin"
+    "adminPanel": "Admin",
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar"
   },
   "marketing": {
     "heroTitle": "Cognex-grade defect detection, at a fraction of the cost",
@@ -199,7 +201,11 @@
     "muteAlerts": "Mute alerts",
     "unmuteAlerts": "Unmute alerts",
     "statusFail": "Defect detected",
-    "statusPass": "No defects"
+    "statusPass": "No defects",
+    "widenPanel": "Widen panel",
+    "narrowPanel": "Narrow panel",
+    "fullscreen": "Full screen",
+    "exitFullscreen": "Exit full screen"
   },
   "trends": {
     "title": "Defect trends",

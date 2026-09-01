@@ -6,6 +6,10 @@ import {
   CheckCircle2,
   CircleStop,
   Cpu,
+  Expand,
+  Maximize2,
+  Minimize2,
+  Shrink,
   TriangleAlert,
   Volume2,
   VolumeX,
@@ -61,12 +65,15 @@ const MIN_SENSITIVITY = 0.1;
 const MAX_SENSITIVITY = 0.75;
 const SENSITIVITY_STEP = 0.05;
 
+const WIDE_KEY = "zemainspect:edge-wide";
+
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 
 export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const { t, language } = useTranslation();
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const workCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sessionRef = useRef<InferenceSession | null>(null);
@@ -89,6 +96,8 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const [upload, setUpload] = useState(true);
   const [sensitivity, setSensitivity] = useState(DEFAULT_CONFIDENCE);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [wide, setWide] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     sensitivityRef.current = sensitivity;
@@ -96,6 +105,52 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
+
+  // Read the saved layout preference after mount, same reasoning as the
+  // sidebar's collapsed state: the server can't know it, so matching the
+  // server's render (not wide) on first paint avoids a hydration mismatch.
+  useEffect(() => {
+    try {
+      setWide(localStorage.getItem(WIDE_KEY) === "1");
+    } catch {
+      // No storage available — default layout is fine.
+    }
+  }, []);
+
+  const toggleWide = () => {
+    setWide((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(WIDE_KEY, next ? "1" : "0");
+      } catch {
+        // Nothing to persist to; the toggle still works for this session.
+      }
+      return next;
+    });
+  };
+
+  // Reflect real browser fullscreen state, including exits the operator
+  // triggers with Esc rather than this component's own button.
+  useEffect(() => {
+    const onChange = () =>
+      setIsFullscreen(document.fullscreenElement === videoContainerRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await videoContainerRef.current?.requestFullscreen();
+      }
+    } catch {
+      // Some browsers refuse fullscreen outside a few specific gestures, or
+      // it's disabled by policy — the button simply does nothing rather than
+      // throwing into the inspection loop.
+    }
+  }, []);
 
   const isFailing = status === "running" && detections.length > 0;
 
@@ -325,6 +380,19 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       description={t("edge.subtitle")}
       action={
         <div className="flex items-center gap-2">
+          <GlassButton
+            size="sm"
+            variant="ghost"
+            onClick={toggleWide}
+            aria-label={wide ? t("edge.narrowPanel") : t("edge.widenPanel")}
+            title={wide ? t("edge.narrowPanel") : t("edge.widenPanel")}
+          >
+            {wide ? (
+              <Minimize2 className="h-3.5 w-3.5" aria-hidden />
+            ) : (
+              <Maximize2 className="h-3.5 w-3.5" aria-hidden />
+            )}
+          </GlassButton>
           {status === "running" && (
             <GlassButton
               size="sm"
@@ -354,23 +422,47 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
         </div>
       }
     >
-      <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+      <div className={cn("grid gap-4", wide ? "grid-cols-1" : "lg:grid-cols-[2fr_1fr]")}>
         <div
+          ref={videoContainerRef}
           className={cn(
-            "relative overflow-hidden rounded-xl bg-black/80 ring-2 ring-transparent transition-all duration-200",
+            "relative overflow-hidden bg-black/80 ring-2 ring-transparent transition-all duration-200",
             isFailing && "animate-pulse ring-fail",
+            // In real fullscreen this element becomes the entire viewport —
+            // fill that space edge to edge rather than keeping the card's
+            // rounded corners and fixed aspect ratio.
+            isFullscreen ? "rounded-none" : "rounded-xl",
           )}
         >
           <video
             ref={videoRef}
             playsInline
             muted
-            className="aspect-video w-full object-contain"
+            className={cn(
+              "w-full object-contain",
+              isFullscreen ? "h-dvh max-h-none" : "aspect-video",
+            )}
           />
           <canvas
             ref={overlayRef}
             className="pointer-events-none absolute inset-0 h-full w-full object-contain"
           />
+          <div className="absolute right-2 bottom-2">
+            <GlassButton
+              size="sm"
+              variant="ghost"
+              onClick={() => void toggleFullscreen()}
+              aria-label={isFullscreen ? t("edge.exitFullscreen") : t("edge.fullscreen")}
+              title={isFullscreen ? t("edge.exitFullscreen") : t("edge.fullscreen")}
+              className="bg-black/40 text-white hover:bg-black/60"
+            >
+              {isFullscreen ? (
+                <Shrink className="h-3.5 w-3.5" aria-hidden />
+              ) : (
+                <Expand className="h-3.5 w-3.5" aria-hidden />
+              )}
+            </GlassButton>
+          </div>
           {status === "running" && (
             <>
               <div className="absolute left-2 top-2 flex flex-wrap gap-1.5">
