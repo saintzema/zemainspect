@@ -170,11 +170,36 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   // inspection. Proxying keeps the page responsive on a low-end factory tablet.
   ort.env.wasm.proxy = true;
 
-  const response = await fetch(modelUrl, { cache: "force-cache" });
-  if (!response.ok) {
-    throw new Error(`Could not download the model (${response.status})`);
+  /*
+   * A dropped connection mid-download throws rather than returning a non-ok
+   * response, and that raw error ("Failed to fetch", "net::ERR_FAILED")
+   * reached the operator verbatim. On a factory link that drops — the exact
+   * network this feature exists to survive — the most likely failure gave the
+   * least usable message. Both paths now say the same actionable thing.
+   */
+  let response: Response;
+  try {
+    response = await fetch(modelUrl, { cache: "force-cache" });
+  } catch (err) {
+    throw new Error(
+      `Could not download the detection model — the connection failed. Check the ` +
+        `network and try again. (${err instanceof Error ? err.message : String(err)})`,
+    );
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!response.ok) {
+    throw new Error(`Could not download the detection model (HTTP ${response.status}).`);
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await response.arrayBuffer());
+  } catch (err) {
+    // The body can still fail partway through, after headers looked fine.
+    throw new Error(
+      `The detection model download was interrupted. Check the network and try ` +
+        `again. (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
 
   /*
    * `.slice()` a fresh copy for every attempt — this is load-bearing, not
@@ -198,32 +223,68 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
       graphOptimizationLevel: "all",
     });
 
-  // Try WebGPU, but only keep it if it is actually fast. Selecting purely on
-  // "did it initialise" is the trap: a software-emulated adapter initialises
-  // happily and then runs far slower than WASM, which on a production line
-  // means a stalled inspection rather than a real-time one.
-  if (await hasUsableGpu()) try {
-    const candidate = await withTimeout(build("webgpu"), WEBGPU_INIT_TIMEOUT_MS, "WebGPU session creation");
-    const warmupMs = await withTimeout(warmupSession(candidate, ort), WEBGPU_INIT_TIMEOUT_MS, "WebGPU warmup");
-    if (warmupMs <= WEBGPU_WARMUP_BUDGET_MS) {
+  /*
+   * Exactly ONE InferenceSession.create() call per page load. This is a hard
+   * constraint, not a preference.
+   *
+   * ORT's WASM runtime is a per-page singleton, and both execution providers
+   * go through it — the WebGPU EP is layered on the same WASM module, not a
+   * separate runtime. A second `create()` that begins while a first is still
+   * initialising trips ORT's own guard: "multiple calls to 'initWasm()'
+   * detected", and no backend comes up at all.
+   *
+   * The old code did exactly that. It raced the WebGPU `create()` against a
+   * timeout and, when the timeout won, immediately started the WASM one — but
+   * `withTimeout` only stops *awaiting* a promise, it cannot cancel the work
+   * behind it, so the abandoned WebGPU init was still running when the WASM
+   * init began. In production that surfaced as a dead ~22s wait (an 8s WebGPU
+   * timeout, then the collision partway through the WASM attempt).
+   *
+   * So the provider is now chosen up front and committed to. `hasUsableGpu()`
+   * already screens out the software rasterisers that motivated the original
+   * try-and-measure dance, and it does so without touching the runtime.
+   *
+   * WebGPU is additionally opt-in per deployment. It has caused two separate
+   * production incidents here, and no sandbox available to this project has a
+   * GPU to regression-test it against — shipping it on by default would mean
+   * every operator runs a path that has never been verified end to end on
+   * real hardware. WASM is slower per frame but is the path that is actually
+   * tested. Set NEXT_PUBLIC_ENABLE_WEBGPU=true to try it once you can verify
+   * it on the target hardware.
+   */
+  const webgpuEnabled = process.env.NEXT_PUBLIC_ENABLE_WEBGPU === "true";
+
+  if (webgpuEnabled && (await hasUsableGpu())) {
+    try {
+      // No timeout race around create(): abandoning it is what caused the
+      // collision above. Only the warmup — which runs after create() has
+      // fully settled, so nothing else can be mid-init — is time-bounded.
+      const candidate = await build("webgpu");
+      const warmupMs = await withTimeout(
+        warmupSession(candidate, ort),
+        WEBGPU_INIT_TIMEOUT_MS,
+        "WebGPU warmup",
+      );
+      if (warmupMs > WEBGPU_WARMUP_BUDGET_MS) {
+        console.warn(
+          `[zemainspect] WebGPU warmup took ${Math.round(warmupMs)}ms ` +
+            `(budget ${WEBGPU_WARMUP_BUDGET_MS}ms) — likely software emulation, but ` +
+            `keeping it: creating a second session to fall back would trip ORT's ` +
+            `initWasm() guard and leave no backend at all.`,
+        );
+      }
       activeBackend = "webgpu";
       return candidate;
+    } catch (err) {
+      // A create() that *rejected* has finished — nothing is mid-init — so
+      // the WASM attempt below is safe to make.
+      console.warn("[zemainspect] WebGPU backend failed, using WASM:", err);
     }
-    console.warn(
-      `[zemainspect] WebGPU warmup took ${Math.round(warmupMs)}ms ` +
-        `(budget ${WEBGPU_WARMUP_BUDGET_MS}ms) — likely software emulation. Using WASM.`,
-    );
-    await candidate.release?.();
-  } catch (err) {
-    // Timed out, threw, or there is no WebGPU at all — WASM is the answer
-    // either way, but a silent hang here is exactly the bug this guards
-    // against, so it is worth a trace even though we recover from it.
-    console.warn("[zemainspect] WebGPU backend unavailable, falling back to WASM:", err);
   }
 
-  let fallback: InferenceSession;
+  let session: InferenceSession;
   try {
-    fallback = await withTimeout(build("wasm"), WASM_INIT_TIMEOUT_MS, "WASM session creation");
+    session = await withTimeout(build("wasm"), WASM_INIT_TIMEOUT_MS, "WASM session creation");
   } catch (err) {
     throw new Error(
       "Could not start the detection model in this browser. Try Chrome or Edge, " +
@@ -233,6 +294,7 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
         })`,
     );
   }
+  const fallback = session;
   // Pay the one-off warmup here rather than on the operator's first frame. A
   // failed or hung warmup does not fail startup — the session already works,
   // it is just measured cold on the first real frame instead.
@@ -241,9 +303,37 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   return fallback;
 }
 
+/**
+ * Whether a session build has ever been started in this page.
+ *
+ * Retrying after a failure used to clear `sessionPromise` and call
+ * `createSession()` again, which issues another `InferenceSession.create()`
+ * and therefore another `initWasm()`. But our timeout only stops *awaiting*
+ * the failed attempt — ORT's init may still be running behind it — so the
+ * retry collides with it and trips "multiple calls to 'initWasm()' detected",
+ * turning a slow first load into a permanently broken one. And clicking Start
+ * again after an error is precisely what an operator does.
+ *
+ * ORT gives no way to reset that singleton, so a reload is genuinely the only
+ * clean recovery. Saying so plainly beats a retry that quietly makes things
+ * worse.
+ */
+let wasmInitAttempted = false;
+
 export function loadWebSession(modelUrl: string): Promise<InferenceSession> {
   if (!sessionPromise) {
+    if (wasmInitAttempted) {
+      return Promise.reject(
+        new Error(
+          "The detection engine already failed to start in this tab and cannot be " +
+            "restarted without reloading. Refresh the page and press Start camera again.",
+        ),
+      );
+    }
+    wasmInitAttempted = true;
     sessionPromise = createSession(modelUrl).catch((err) => {
+      // Deliberately NOT clearing wasmInitAttempted: the runtime is
+      // single-init per page, so a second attempt cannot succeed here.
       sessionPromise = null;
       throw err;
     });

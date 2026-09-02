@@ -271,15 +271,36 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
        * prompt an operator is staring at the screen waiting for, which reads
        * as "the browser never asked for my camera" when the real story is
        * "it never got that far."
+       *
+       * allSettled, NOT all: `Promise.all` rejects the instant either side
+       * fails, which orphans whatever the other side produced. When the model
+       * failed, that meant a camera stream that had already been granted —
+       * hardware light on — was dropped on the floor without ever being
+       * attached to the video element OR stopped. The operator saw an active
+       * camera light above a black frame, which looks like a broken camera
+       * when the real failure was the model. Settling both lets us release
+       * the camera deliberately when we can't use it.
        */
-      const [stream, session] = await Promise.all([
+      const [cameraResult, sessionResult] = await Promise.allSettled([
         navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "environment" },
           audio: false,
         }),
         sessionRef.current ? Promise.resolve(sessionRef.current) : loadWebSession(modelUrl),
       ]);
-      sessionRef.current = session;
+
+      if (cameraResult.status === "fulfilled" && sessionResult.status !== "fulfilled") {
+        // Never hold a camera we aren't about to draw. Releasing the tracks
+        // turns the hardware indicator back off, so the light always tells
+        // the truth about whether we are actually capturing.
+        cameraResult.value.getTracks().forEach((track) => track.stop());
+      }
+
+      if (sessionResult.status === "rejected") throw sessionResult.reason;
+      if (cameraResult.status === "rejected") throw cameraResult.reason;
+
+      const stream = cameraResult.value;
+      sessionRef.current = sessionResult.value;
       streamRef.current = stream;
 
       const video = videoRef.current;
