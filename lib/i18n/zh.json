@@ -218,7 +218,14 @@
     "guardFramesHint": "跳过与模型训练所用钢材表面不相符的画面，而不是凭空报告缺陷。",
     "unsuitable_colour": "并非钢材表面",
     "unsuitable_too_dark": "画面过暗，无法检测",
-    "unsuitable_too_flat": "缺少表面细节"
+    "unsuitable_too_flat": "缺少表面细节",
+    "snapshot": "保存带标注的截图",
+    "snapshotSavedLocal": "截图已下载。配置 Vercel Blob 令牌后还可同时存档到云端。",
+    "snapshotSavedCloud": "截图已下载并存档至云端。",
+    "snapshotNoFrame": "尚无可截取的摄像头画面。",
+    "unsuitableDetail": "色彩读数 {measured} 高于上限 {limit}。请仅框选工件区域，若这确实是待检表面，也可调高上限。",
+    "colourLimit": "色彩容差 — {limit}",
+    "colourLimitHint": "画面色彩超过此值即被排除。灰度钢材接近 0；房间或人物通常远高于 20。"
   },
   "trends": {
     "title": "缺陷趋势",

@@ -9,6 +9,7 @@ import {
   Expand,
   Maximize2,
   Minimize2,
+  Aperture,
   Scan,
   ShieldCheck,
   Shrink,
@@ -38,7 +39,10 @@ import { playClearTone, playDefectAlert } from "@/lib/inference/alert-sound";
 import { severityColor, severityTone } from "@/lib/inference/severity";
 import { DetectionTracker, DEFAULT_CONFIRM_FRAMES } from "@/lib/inference/temporal";
 import { FULL_FRAME, isDegenerate, isFullFrame, normaliseRoi, type Roi } from "@/lib/inference/roi";
-import type { SuitabilityVerdict } from "@/lib/inference/frame-suitability";
+import {
+  DEFAULT_MAX_COLOURFULNESS,
+  type SuitabilityVerdict,
+} from "@/lib/inference/frame-suitability";
 import { cn } from "@/lib/utils";
 import type { InferenceSession } from "onnxruntime-web";
 
@@ -70,6 +74,26 @@ const MIN_SENSITIVITY = 0.1;
 const MAX_SENSITIVITY = 0.75;
 const SENSITIVITY_STEP = 0.05;
 
+/**
+ * Fraction of the last inference's duration to rest before starting the next.
+ *
+ * The loop used to chain inferences back to back through
+ * requestAnimationFrame. With the WASM proxy worker disabled — which a
+ * browser that cannot load the worker requires — inference runs on the main
+ * thread, so a 1-2s pass blocks the compositor for its whole duration and the
+ * video visibly freezes and smears between inspections, reporting 0 FPS.
+ *
+ * Resting proportionally rather than by a fixed delay is what makes this work
+ * across devices: a fast machine barely pauses, a slow one gets real
+ * breathing room, and neither needs a hand-tuned number. The video keeps
+ * painting; the cost is a slightly lower inspection rate, which is the right
+ * side of that trade — an operator cannot act on inspections faster than they
+ * can see the part anyway.
+ */
+const PAINT_REST_RATIO = 0.6;
+const MIN_PAINT_REST_MS = 60;
+const MAX_PAINT_REST_MS = 1200;
+
 const WIDE_KEY = "zemainspect:edge-wide";
 
 /** Operator-facing range for temporal confirmation. */
@@ -96,6 +120,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const soundEnabledRef = useRef(true);
   const roiRef = useRef<Roi>(FULL_FRAME);
   const guardFramesRef = useRef(true);
+  const colourLimitRef = useRef(DEFAULT_MAX_COLOURFULNESS);
   const trackerRef = useRef(new DetectionTracker({ confirmFrames: DEFAULT_CONFIRM_FRAMES }));
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -117,6 +142,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const [roi, setRoi] = useState<Roi>(FULL_FRAME);
   const [draftRoi, setDraftRoi] = useState<Roi | null>(null);
   const [unsuitable, setUnsuitable] = useState<SuitabilityVerdict | null>(null);
+  const [colourLimit, setColourLimit] = useState(DEFAULT_MAX_COLOURFULNESS);
 
   useEffect(() => {
     sensitivityRef.current = sensitivity;
@@ -130,6 +156,9 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   useEffect(() => {
     guardFramesRef.current = guardFrames;
   }, [guardFrames]);
+  useEffect(() => {
+    colourLimitRef.current = colourLimit;
+  }, [colourLimit]);
 
   /*
    * Rebuild the tracker when the confirmation depth changes rather than
@@ -239,6 +268,14 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
 
   const onRoiPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
+      /*
+       * The overlay controls (snapshot, fullscreen) live inside this same
+       * container, so without this a pointerdown on one of them is captured
+       * by the ROI drag and the button's click never fires at all — the
+       * operator presses Save and silently gets nothing.
+       */
+      if ((event.target as HTMLElement).closest("button")) return;
+
       const point = pointerToVideo(event);
       if (!point) return;
       // Capture so a drag that leaves the element still tracks and still ends.
@@ -286,6 +323,110 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
     },
     [],
   );
+
+  /**
+   * Composite the current frame with its overlay into a single annotated PNG.
+   *
+   * The video and the boxes live in two separate elements, so "the picture the
+   * operator is looking at" does not exist as one image anywhere until it is
+   * built here. A caption strip is burned in rather than left as metadata: a
+   * PNG dropped into a supplier email or a scrap report has to carry its own
+   * line, timestamp and verdict, because the surrounding context never travels
+   * with the file.
+   */
+  const composeSnapshot = useCallback((): string | null => {
+    const video = videoRef.current;
+    const overlay = overlayRef.current;
+    if (!video || !video.videoWidth) return null;
+
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    const captionHeight = Math.max(28, Math.round(height / 22));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height + captionHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    ctx.drawImage(video, 0, 0, width, height);
+    // The overlay canvas is already at native frame resolution, so this lands
+    // pixel-for-pixel over the frame with no rescaling.
+    if (overlay && overlay.width > 0) ctx.drawImage(overlay, 0, 0, width, height);
+
+    ctx.fillStyle = "#0b1220";
+    ctx.fillRect(0, height, width, captionHeight);
+
+    const fontSize = Math.max(12, Math.round(captionHeight * 0.48));
+    ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
+    ctx.textBaseline = "middle";
+
+    const verdict = unsuitable
+      ? t(`edge.unsuitable_${unsuitable.reason ?? "colour"}`)
+      : detections.length > 0
+        ? t("edge.statusFail")
+        : t("edge.statusPass");
+    ctx.fillStyle = unsuitable ? "#fbbf24" : detections.length > 0 ? "#f85149" : "#3fb950";
+    ctx.fillText(verdict, fontSize * 0.6, height + captionHeight / 2);
+
+    const meta = [
+      lineId || t("dashboard.line"),
+      t(`categories.${category}`),
+      new Date().toLocaleString(language === "zh" ? "zh-CN" : "en-GB"),
+    ].join("  ·  ");
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = `${fontSize}px system-ui, sans-serif`;
+    const metaWidth = ctx.measureText(meta).width;
+    ctx.fillText(meta, Math.max(0, width - metaWidth - fontSize * 0.6), height + captionHeight / 2);
+
+    return canvas.toDataURL("image/png");
+  }, [t, language, detections, unsuitable, lineId, category]);
+
+  const [snapshotState, setSnapshotState] = useState<
+    { kind: "idle" } | { kind: "saving" } | { kind: "saved"; url: string | null } | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  const captureSnapshot = useCallback(async () => {
+    const dataUrl = composeSnapshot();
+    if (!dataUrl) {
+      setSnapshotState({ kind: "error", message: t("edge.snapshotNoFrame") });
+      return;
+    }
+
+    /*
+     * Download first, upload second. The local copy is the part the operator
+     * is guaranteed to get: it needs no token, no network and no plan, so a
+     * cloud archive that is unconfigured or unreachable must never cost them
+     * the frame they just tried to keep.
+     */
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = `zemainspect-${lineId ? lineId.replace(/\s+/g, "-") + "-" : ""}${stamp}.png`;
+    // Must be in the document: a click on a detached anchor is ignored for
+    // downloads in Chromium, so the operator would press the button and
+    // silently get nothing.
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    setSnapshotState({ kind: "saving" });
+    try {
+      const res = await fetch("/api/edge/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (res.ok) setSnapshotState({ kind: "saved", url: body.url ?? null });
+      else if (res.status === 503) setSnapshotState({ kind: "saved", url: null });
+      else setSnapshotState({ kind: "error", message: body.error ?? t("errors.generic") });
+    } catch {
+      // Downloaded fine, cloud copy failed — say so precisely rather than
+      // implying the whole capture was lost.
+      setSnapshotState({ kind: "saved", url: null });
+    }
+  }, [composeSnapshot, lineId, t]);
 
   const isFailing = status === "running" && detections.length > 0;
 
@@ -483,6 +624,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
 
       let frames = 0;
       let windowStart = performance.now();
+      let lastInferenceMs = 0;
 
       const loop = async () => {
         if (!runningRef.current) return;
@@ -501,6 +643,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
                 confidenceThreshold: sensitivityRef.current,
                 roi: roiRef.current,
                 guardFrames: guardFramesRef.current,
+                suitability: { maxColourfulness: colourLimitRef.current },
               },
             );
 
@@ -524,6 +667,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               trackerRef.current.reset();
               setDetections([]);
               setLatency(result.processingTimeMs);
+              lastInferenceMs = result.processingTimeMs;
               drawOverlay([], video.videoWidth, video.videoHeight);
               rafRef.current = requestAnimationFrame(() => void loop());
               return;
@@ -536,6 +680,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
 
             setDetections(confirmed);
             setLatency(result.processingTimeMs);
+            lastInferenceMs = result.processingTimeMs;
             drawOverlay(confirmed, video.videoWidth, video.videoHeight);
 
             const failingNow = confirmed.length > 0;
@@ -567,7 +712,20 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
           }
         }
 
-        rafRef.current = requestAnimationFrame(() => void loop());
+        /*
+         * Yield long enough for the browser to actually paint before the next
+         * inference seizes the thread again. setTimeout rather than a bare
+         * rAF chain: rAF fires before paint, so chaining straight back into a
+         * blocking inference starves the compositor entirely.
+         */
+        const rest = Math.min(
+          MAX_PAINT_REST_MS,
+          Math.max(MIN_PAINT_REST_MS, lastInferenceMs * PAINT_REST_RATIO),
+        );
+        window.setTimeout(() => {
+          if (!runningRef.current) return;
+          rafRef.current = requestAnimationFrame(() => void loop());
+        }, rest);
       };
 
       const postResult = async (
@@ -699,7 +857,20 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
             ref={overlayRef}
             className="pointer-events-none absolute inset-0 h-full w-full object-contain"
           />
-          <div className="absolute right-2 bottom-2">
+          <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
+            {status === "running" && (
+              <GlassButton
+                size="sm"
+                variant="ghost"
+                onClick={() => void captureSnapshot()}
+                loading={snapshotState.kind === "saving"}
+                aria-label={t("edge.snapshot")}
+                title={t("edge.snapshot")}
+                className="bg-black/40 text-white hover:bg-black/60"
+              >
+                <Aperture className="h-3.5 w-3.5" aria-hidden />
+              </GlassButton>
+            )}
             <GlassButton
               size="sm"
               variant="ghost"
@@ -824,6 +995,51 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
             </GlassButton>
           </div>
           <p className="-mt-2 text-xs text-ink-muted">{t("edge.roiHint")}</p>
+
+          {/*
+            Show the measured number, not just the verdict. "Not a steel
+            surface" with no value behind it is unarguable — an operator
+            pointing at a real part that gets rejected has no way to tell
+            whether they are marginally over the line or nowhere near it, and
+            no basis for choosing a threshold.
+          */}
+          {unsuitable && (
+            <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">
+              {t("edge.unsuitableDetail", {
+                measured: unsuitable.stats.colourfulness.toFixed(1),
+                limit: colourLimit.toFixed(0),
+              })}
+            </p>
+          )}
+
+          {guardFrames && (
+            <div>
+              <FieldLabel htmlFor="edge-colour-limit" hint={t("edge.colourLimitHint")}>
+                {t("edge.colourLimit", { limit: colourLimit })}
+              </FieldLabel>
+              <input
+                id="edge-colour-limit"
+                type="range"
+                min={4}
+                max={60}
+                step={2}
+                value={colourLimit}
+                onChange={(event) => setColourLimit(Number(event.target.value))}
+                className="h-2 w-full cursor-pointer accent-[rgb(var(--accent))]"
+              />
+            </div>
+          )}
+
+          {snapshotState.kind === "saved" && (
+            <p className="rounded-xl bg-pass/10 px-3 py-2 text-xs text-pass">
+              {snapshotState.url ? t("edge.snapshotSavedCloud") : t("edge.snapshotSavedLocal")}
+            </p>
+          )}
+          {snapshotState.kind === "error" && (
+            <p className="rounded-xl bg-fail/10 px-3 py-2 text-xs text-fail">
+              {snapshotState.message}
+            </p>
+          )}
 
           <label className="flex items-start gap-2 text-sm text-ink">
             <input
