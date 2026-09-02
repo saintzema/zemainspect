@@ -9,6 +9,8 @@ import {
   Expand,
   Maximize2,
   Minimize2,
+  Scan,
+  ShieldCheck,
   Shrink,
   TriangleAlert,
   Volume2,
@@ -34,6 +36,9 @@ import { PRODUCT_CATEGORIES, labelFor } from "@/lib/inference/labels";
 import { DEFAULT_CONFIDENCE, type Detection } from "@/lib/inference/postprocess";
 import { playClearTone, playDefectAlert } from "@/lib/inference/alert-sound";
 import { severityColor, severityTone } from "@/lib/inference/severity";
+import { DetectionTracker, DEFAULT_CONFIRM_FRAMES } from "@/lib/inference/temporal";
+import { FULL_FRAME, isDegenerate, isFullFrame, normaliseRoi, type Roi } from "@/lib/inference/roi";
+import type { SuitabilityVerdict } from "@/lib/inference/frame-suitability";
 import { cn } from "@/lib/utils";
 import type { InferenceSession } from "onnxruntime-web";
 
@@ -67,6 +72,10 @@ const SENSITIVITY_STEP = 0.05;
 
 const WIDE_KEY = "zemainspect:edge-wide";
 
+/** Operator-facing range for temporal confirmation. */
+const MIN_CONFIRM_FRAMES = 1;
+const MAX_CONFIRM_FRAMES = 5;
+
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 
 export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
@@ -85,6 +94,10 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const runningRef = useRef(false);
   const sensitivityRef = useRef(DEFAULT_CONFIDENCE);
   const soundEnabledRef = useRef(true);
+  const roiRef = useRef<Roi>(FULL_FRAME);
+  const guardFramesRef = useRef(true);
+  const trackerRef = useRef(new DetectionTracker({ confirmFrames: DEFAULT_CONFIRM_FRAMES }));
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +112,11 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const [wide, setWide] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [loadingElapsedSec, setLoadingElapsedSec] = useState(0);
+  const [confirmFrames, setConfirmFrames] = useState(DEFAULT_CONFIRM_FRAMES);
+  const [guardFrames, setGuardFrames] = useState(true);
+  const [roi, setRoi] = useState<Roi>(FULL_FRAME);
+  const [draftRoi, setDraftRoi] = useState<Roi | null>(null);
+  const [unsuitable, setUnsuitable] = useState<SuitabilityVerdict | null>(null);
 
   useEffect(() => {
     sensitivityRef.current = sensitivity;
@@ -106,6 +124,22 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
+  useEffect(() => {
+    roiRef.current = roi;
+  }, [roi]);
+  useEffect(() => {
+    guardFramesRef.current = guardFrames;
+  }, [guardFrames]);
+
+  /*
+   * Rebuild the tracker when the confirmation depth changes rather than
+   * mutating it: half-accumulated hit counts measured against the old
+   * threshold would either confirm instantly or never, depending on which
+   * way the operator moved the slider.
+   */
+  useEffect(() => {
+    trackerRef.current = new DetectionTracker({ confirmFrames });
+  }, [confirmFrames]);
 
   // Read the saved layout preference after mount, same reasoning as the
   // sidebar's collapsed state: the server can't know it, so matching the
@@ -172,6 +206,87 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
     }
   }, []);
 
+  /**
+   * Map a pointer position to normalised video coordinates.
+   *
+   * The video is `object-contain`, so it is letterboxed inside its container
+   * whenever their aspect ratios differ — the displayed picture is not the
+   * element's box. Measuring against the container instead of the actual
+   * painted area would skew every ROI by the size of the letterbox bars, and
+   * the crop would quietly not be where the operator drew it.
+   */
+  const pointerToVideo = useCallback((event: React.PointerEvent): { x: number; y: number } | null => {
+    const container = videoContainerRef.current;
+    const video = videoRef.current;
+    if (!container || !video || !video.videoWidth || !video.videoHeight) return null;
+
+    const rect = container.getBoundingClientRect();
+    const videoAspect = video.videoWidth / video.videoHeight;
+    const boxAspect = rect.width / rect.height;
+
+    let renderedW = rect.width;
+    let renderedH = rect.height;
+    if (boxAspect > videoAspect) renderedW = rect.height * videoAspect;
+    else renderedH = rect.width / videoAspect;
+
+    const offsetX = (rect.width - renderedW) / 2;
+    const offsetY = (rect.height - renderedH) / 2;
+
+    const x = (event.clientX - rect.left - offsetX) / renderedW;
+    const y = (event.clientY - rect.top - offsetY) / renderedH;
+    return { x: Math.min(Math.max(x, 0), 1), y: Math.min(Math.max(y, 0), 1) };
+  }, []);
+
+  const onRoiPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const point = pointerToVideo(event);
+      if (!point) return;
+      // Capture so a drag that leaves the element still tracks and still ends.
+      event.currentTarget.setPointerCapture(event.pointerId);
+      dragStartRef.current = point;
+      setDraftRoi({ x: point.x, y: point.y, width: 0, height: 0 });
+    },
+    [pointerToVideo],
+  );
+
+  const onRoiPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const start = dragStartRef.current;
+      if (!start) return;
+      const point = pointerToVideo(event);
+      if (!point) return;
+      setDraftRoi({
+        x: start.x,
+        y: start.y,
+        width: point.x - start.x,
+        height: point.y - start.y,
+      });
+    },
+    [pointerToVideo],
+  );
+
+  const onRoiPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const start = dragStartRef.current;
+      dragStartRef.current = null;
+      if (!start) return;
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+
+      setDraftRoi((draft) => {
+        if (!draft) return null;
+        const next = normaliseRoi(draft);
+        // A click rather than a drag: treat as "clear the ROI", which is the
+        // intuitive result of tapping the picture, not a 2-pixel crop.
+        setRoi(isDegenerate(next) ? FULL_FRAME : next);
+        return null;
+      });
+      // A new region is a new scene; previous confirmation progress is not
+      // about the part now under inspection.
+      trackerRef.current.reset();
+    },
+    [],
+  );
+
   const isFailing = status === "running" && detections.length > 0;
 
   const stop = useCallback(() => {
@@ -183,7 +298,11 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
     setStatus("ready");
     setFps(0);
     setDetections([]);
+    setUnsuitable(null);
     wasFailingRef.current = false;
+    // A new run is a new confirmation sequence; carrying hits across a
+    // stop would confirm a stale defect on the first frame back.
+    trackerRef.current.reset();
 
     // The last frame's bounding boxes otherwise linger on screen after the
     // camera has stopped, over a now-frozen video — a stale defect box on a
@@ -194,6 +313,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
 
   // Always release the camera when the operator navigates away.
   useEffect(() => stop, [stop]);
+
 
   const drawOverlay = useCallback(
     (dets: Detection[], width: number, height: number) => {
@@ -206,6 +326,42 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
 
       ctx.clearRect(0, 0, width, height);
       const lineWidth = Math.max(2, Math.round(width / 320));
+
+      /*
+       * Shade everything outside the region of interest. The operator needs
+       * to see at a glance which part of the frame is actually being
+       * inspected — an ROI that is silently active is worse than none, since
+       * defects outside it are invisible by design and would otherwise look
+       * like the detector missing them.
+       */
+      const activeRoi = draftRoi ?? roi;
+      if (!isFullFrame(activeRoi)) {
+        const safe = normaliseRoi(activeRoi);
+        const rx = safe.x * width;
+        const ry = safe.y * height;
+        const rw = safe.width * width;
+        const rh = safe.height * height;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, width, height);
+        // Reverse-wound inner rect punches a hole via the even-odd rule, so
+        // the mask is drawn in one pass rather than as four edge rectangles.
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(rx, ry + rh);
+        ctx.lineTo(rx + rw, ry + rh);
+        ctx.lineTo(rx + rw, ry);
+        ctx.closePath();
+        ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+        ctx.fill("evenodd");
+        ctx.restore();
+
+        ctx.strokeStyle = draftRoi ? "rgba(96, 165, 250, 0.95)" : "rgba(148, 163, 184, 0.9)";
+        ctx.lineWidth = lineWidth;
+        ctx.setLineDash([lineWidth * 4, lineWidth * 3]);
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.setLineDash([]);
+      }
       const cornerLen = Math.max(12, Math.round(width / 40));
       ctx.font = `600 ${Math.max(12, Math.round(width / 44))}px system-ui, sans-serif`;
       ctx.textBaseline = "top";
@@ -250,8 +406,20 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
         ctx.fillText(text, x + padding, labelY + (boxH - Math.max(12, width / 44)) / 2);
       }
     },
-    [language],
+    [language, roi, draftRoi],
   );
+  /*
+   * Repaint the ROI mask when it changes while the camera is idle. The
+   * inspection loop repaints every frame while running, but with no loop
+   * there is nothing to show the operator the region they just drew.
+   */
+  useEffect(() => {
+    if (status === "running") return;
+    const video = videoRef.current;
+    const width = video?.videoWidth || overlayRef.current?.width || 0;
+    const height = video?.videoHeight || overlayRef.current?.height || 0;
+    if (width > 0 && height > 0) drawOverlay([], width, height);
+  }, [roi, draftRoi, status, drawOverlay]);
 
   const start = useCallback(async () => {
     if (!modelUrl) return;
@@ -329,7 +497,11 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               video.videoWidth,
               video.videoHeight,
               work,
-              sensitivityRef.current,
+              {
+                confidenceThreshold: sensitivityRef.current,
+                roi: roiRef.current,
+                guardFrames: guardFramesRef.current,
+              },
             );
 
             // Stop() can land while this inference call is in flight — it
@@ -339,11 +511,34 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
             // video, which reads as a defect that's still being detected.
             if (!runningRef.current) return;
 
-            setDetections(result.detections);
-            setLatency(result.processingTimeMs);
-            drawOverlay(result.detections, video.videoWidth, video.videoHeight);
+            setUnsuitable(result.unsuitable);
 
-            const failingNow = result.detections.length > 0;
+            /*
+             * An unsuitable frame is not a passing inspection — it is no
+             * inspection at all. Reset the tracker so the confirmation run is
+             * broken rather than resumed: whatever was being tracked before
+             * the camera swung off the part is not the same defect if it
+             * swings back.
+             */
+            if (result.unsuitable) {
+              trackerRef.current.reset();
+              setDetections([]);
+              setLatency(result.processingTimeMs);
+              drawOverlay([], video.videoWidth, video.videoHeight);
+              rafRef.current = requestAnimationFrame(() => void loop());
+              return;
+            }
+
+            // Only defects that have held across consecutive frames get past
+            // here; single-frame flickers never reach the operator, the
+            // dashboard, or the usage counter.
+            const confirmed = trackerRef.current.update(result.detections);
+
+            setDetections(confirmed);
+            setLatency(result.processingTimeMs);
+            drawOverlay(confirmed, video.videoWidth, video.videoHeight);
+
+            const failingNow = confirmed.length > 0;
             const now = Date.now();
             if (failingNow) {
               if (soundEnabledRef.current && now - lastAlertRef.current > ALERT_COOLDOWN_MS) {
@@ -365,7 +560,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
 
             if (upload && Date.now() - lastUploadRef.current > UPLOAD_THROTTLE_MS) {
               lastUploadRef.current = Date.now();
-              void postResult(result.detections, result.processingTimeMs, work);
+              void postResult(confirmed, result.processingTimeMs, work);
             }
           } catch (err) {
             console.error("Edge inference failed:", err);
@@ -478,8 +673,12 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       <div className={cn("grid gap-4", wide ? "grid-cols-1" : "lg:grid-cols-[2fr_1fr]")}>
         <div
           ref={videoContainerRef}
+          onPointerDown={onRoiPointerDown}
+          onPointerMove={onRoiPointerMove}
+          onPointerUp={onRoiPointerUp}
+          onPointerCancel={onRoiPointerUp}
           className={cn(
-            "relative overflow-hidden bg-black/80 ring-2 ring-transparent transition-all duration-200",
+            "relative touch-none cursor-crosshair overflow-hidden bg-black/80 ring-2 ring-transparent transition-all duration-200",
             isFailing && "animate-pulse ring-fail",
             // In real fullscreen this element becomes the entire viewport —
             // fill that space edge to edge rather than keeping the card's
@@ -526,7 +725,12 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
                 <Badge>{t("edge.inferenceMs", { value: latency })}</Badge>
               </div>
               <div className="absolute right-2 top-2">
-                {isFailing ? (
+                {unsuitable ? (
+                  <Badge tone="warn" className="px-2.5 py-1 text-xs font-semibold">
+                    <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
+                    {t(`edge.unsuitable_${unsuitable.reason ?? "colour"}`)}
+                  </Badge>
+                ) : isFailing ? (
                   <Badge tone="fail" className="animate-pulse px-2.5 py-1 text-xs font-semibold">
                     <TriangleAlert className="h-3.5 w-3.5" aria-hidden />
                     {t("edge.statusFail")}
@@ -585,6 +789,56 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               className="h-2 w-full cursor-pointer accent-[rgb(var(--accent))]"
             />
           </div>
+
+          <div>
+            <FieldLabel htmlFor="edge-confirm" hint={t("edge.confirmFramesHint")}>
+              {t("edge.confirmFrames", { frames: confirmFrames })}
+            </FieldLabel>
+            <input
+              id="edge-confirm"
+              type="range"
+              min={MIN_CONFIRM_FRAMES}
+              max={MAX_CONFIRM_FRAMES}
+              step={1}
+              value={confirmFrames}
+              onChange={(event) => setConfirmFrames(Number(event.target.value))}
+              className="h-2 w-full cursor-pointer accent-[rgb(var(--accent))]"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-sm text-ink">
+              <Scan className="h-3.5 w-3.5 shrink-0 text-ink-muted" aria-hidden />
+              {isFullFrame(roi) ? t("edge.roiFull") : t("edge.roiActive")}
+            </span>
+            <GlassButton
+              size="sm"
+              variant="ghost"
+              disabled={isFullFrame(roi)}
+              onClick={() => {
+                setRoi(FULL_FRAME);
+                trackerRef.current.reset();
+              }}
+            >
+              {t("edge.roiClear")}
+            </GlassButton>
+          </div>
+          <p className="-mt-2 text-xs text-ink-muted">{t("edge.roiHint")}</p>
+
+          <label className="flex items-start gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={guardFrames}
+              onChange={(event) => setGuardFrames(event.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-white/40 accent-[rgb(var(--accent))]"
+            />
+            <span>
+              {t("edge.guardFrames")}
+              <span className="mt-0.5 block text-xs text-ink-muted">
+                {t("edge.guardFramesHint")}
+              </span>
+            </span>
+          </label>
 
           <label className="flex items-start gap-2 text-sm text-ink">
             <input

@@ -207,7 +207,18 @@
     "fullscreen": "Full screen",
     "exitFullscreen": "Exit full screen",
     "loadingModelElapsed": "Loading model… {seconds}s",
-    "loadingModelHint": "First load can take up to a minute — it downloads and compiles the detection engine once per browser session. Every inspection after that runs in milliseconds, offline."
+    "loadingModelHint": "First load can take up to a minute — it downloads and compiles the detection engine once per browser session. Every inspection after that runs in milliseconds, offline.",
+    "confirmFrames": "Confirm across {frames} frame(s)",
+    "confirmFramesHint": "A defect must appear this many frames in a row before it is reported. Higher rejects more flicker; 1 reports every single-frame guess.",
+    "roiFull": "Inspecting the whole frame",
+    "roiActive": "Inspecting a region",
+    "roiClear": "Clear region",
+    "roiHint": "Drag on the video to inspect only the part. Tap once to clear.",
+    "guardFrames": "Reject unsuitable frames",
+    "guardFramesHint": "Skip frames that do not look like the steel surfaces this model was trained on, instead of reporting invented defects.",
+    "unsuitable_colour": "Not a steel surface",
+    "unsuitable_too_dark": "Too dark to inspect",
+    "unsuitable_too_flat": "No surface detail"
   },
   "trends": {
     "title": "Defect trends",

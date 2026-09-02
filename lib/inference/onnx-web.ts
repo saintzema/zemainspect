@@ -9,6 +9,18 @@ import {
 } from "@/lib/inference/postprocess";
 import { letterboxToTensor } from "@/lib/inference/preprocess";
 import { withTimeout } from "@/lib/timeout";
+import {
+  assessFrame,
+  type SuitabilityOptions,
+  type SuitabilityVerdict,
+} from "@/lib/inference/frame-suitability";
+import {
+  isFullFrame,
+  mapDetectionsToFrame,
+  roiToPixels,
+  type PixelRect,
+  type Roi,
+} from "@/lib/inference/roi";
 
 type InferenceSession = OrtWeb.InferenceSession;
 
@@ -372,23 +384,77 @@ export function preprocessFrame(
   sourceHeight: number,
   canvas: HTMLCanvasElement,
   size = MODEL_INPUT_SIZE,
+  /**
+   * Optional sub-rectangle of the source to inspect. When given, only these
+   * pixels reach the model — everything outside is never seen, rather than
+   * being seen and then argued with.
+   */
+  crop?: PixelRect,
 ) {
-  canvas.width = sourceWidth;
-  canvas.height = sourceHeight;
+  const region: PixelRect = crop ?? {
+    x: 0,
+    y: 0,
+    width: sourceWidth,
+    height: sourceHeight,
+  };
+
+  canvas.width = region.width;
+  canvas.height = region.height;
 
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Canvas 2D context unavailable");
 
-  ctx.drawImage(source, 0, 0);
-  const { data } = ctx.getImageData(0, 0, sourceWidth, sourceHeight);
+  /*
+   * The 9-argument drawImage copies the crop 1:1 — same source and
+   * destination size — so no resampling happens here. That matters: the
+   * letterbox below is the single resize step the server also performs, and
+   * putting a second, browser-defined interpolation in front of it would make
+   * browser and API disagree about the same frame.
+   */
+  ctx.drawImage(
+    source,
+    region.x,
+    region.y,
+    region.width,
+    region.height,
+    0,
+    0,
+    region.width,
+    region.height,
+  );
+  const { data } = ctx.getImageData(0, 0, region.width, region.height);
 
   // Canvas gives RGBA, hence a stride of 4.
-  return letterboxToTensor(data, sourceWidth, sourceHeight, size, 4);
+  return {
+    ...letterboxToTensor(data, region.width, region.height, size, 4),
+    /** Kept so the caller can gate on frame statistics without re-reading pixels. */
+    rgba: data,
+    region,
+  };
 }
 
 export interface WebInferenceResult {
   detections: Detection[];
   processingTimeMs: number;
+  /**
+   * Why the frame was skipped, when it was. Null means it was inspected
+   * normally. The caller shows this instead of a defect verdict — an
+   * unsuitable frame has no verdict to give.
+   */
+  unsuitable: SuitabilityVerdict | null;
+}
+
+export interface WebInferenceOptions {
+  confidenceThreshold?: number;
+  /** Inspect only this region of the frame, in normalised 0-1 coordinates. */
+  roi?: Roi;
+  /**
+   * Skip inference entirely on frames that do not resemble the training
+   * distribution. On by default: answering "Patches 76%" about a human face
+   * is worse than answering nothing.
+   */
+  guardFrames?: boolean;
+  suitability?: SuitabilityOptions;
 }
 
 export async function runWebInference(
@@ -397,12 +463,46 @@ export async function runWebInference(
   sourceWidth: number,
   sourceHeight: number,
   canvas: HTMLCanvasElement,
-  confidenceThreshold?: number,
+  options: WebInferenceOptions = {},
 ): Promise<WebInferenceResult> {
   const ort = await loadOrt();
   const started = performance.now();
 
-  const { data, box } = preprocessFrame(source, sourceWidth, sourceHeight, canvas);
+  const { confidenceThreshold, roi, guardFrames = true, suitability } = options;
+
+  const crop = roi && !isFullFrame(roi) ? roiToPixels(roi, sourceWidth, sourceHeight) : undefined;
+
+  const { data, box, rgba, region } = preprocessFrame(
+    source,
+    sourceWidth,
+    sourceHeight,
+    canvas,
+    MODEL_INPUT_SIZE,
+    crop,
+  );
+
+  /*
+   * Gate before inference, not after. Filtering the model's output would
+   * still have paid the full inference cost on a frame we were never going to
+   * trust, and — more importantly — a detector asked an off-distribution
+   * question always answers it. The only way not to get a wrong answer is not
+   * to ask.
+   *
+   * The statistics come from the ROI's pixels, not the whole frame: with a
+   * tight ROI on a steel part, a colourful factory background is irrelevant
+   * and should not veto an otherwise good inspection.
+   */
+  if (guardFrames) {
+    const verdict = assessFrame(rgba, suitability);
+    if (!verdict.suitable) {
+      return {
+        detections: [],
+        processingTimeMs: Math.round(performance.now() - started),
+        unsuitable: verdict,
+      };
+    }
+  }
+
   const tensor = new ort.Tensor("float32", data, [
     1,
     3,
@@ -420,5 +520,11 @@ export async function runWebInference(
     confidenceThreshold ? { confidenceThreshold } : undefined,
   );
 
-  return { detections, processingTimeMs: Math.round(performance.now() - started) };
+  return {
+    // Boxes come back in crop-local coordinates; the overlay and the stored
+    // result both speak full-frame, so shift them before anyone sees them.
+    detections: crop ? mapDetectionsToFrame(detections, region) : detections,
+    processingTimeMs: Math.round(performance.now() - started),
+    unsuitable: null,
+  };
 }

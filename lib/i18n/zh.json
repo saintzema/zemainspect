@@ -207,7 +207,18 @@
     "fullscreen": "全屏",
     "exitFullscreen": "退出全屏",
     "loadingModelElapsed": "正在加载模型… {seconds}秒",
-    "loadingModelHint": "首次加载最长可能需要一分钟——每个浏览器会话只需下载并编译一次检测引擎。此后每次检测都在毫秒级完成，且无需联网。"
+    "loadingModelHint": "首次加载最长可能需要一分钟——每个浏览器会话只需下载并编译一次检测引擎。此后每次检测都在毫秒级完成，且无需联网。",
+    "confirmFrames": "连续 {frames} 帧确认",
+    "confirmFramesHint": "缺陷需连续出现这么多帧才会上报。数值越高越能排除闪烁误报；设为 1 则每一帧的判断都会上报。",
+    "roiFull": "检测整个画面",
+    "roiActive": "仅检测选定区域",
+    "roiClear": "清除区域",
+    "roiHint": "在画面上拖动可只检测工件区域，单击可清除。",
+    "guardFrames": "排除不适用的画面",
+    "guardFramesHint": "跳过与模型训练所用钢材表面不相符的画面，而不是凭空报告缺陷。",
+    "unsuitable_colour": "并非钢材表面",
+    "unsuitable_too_dark": "画面过暗，无法检测",
+    "unsuitable_too_flat": "缺少表面细节"
   },
   "trends": {
     "title": "缺陷趋势",
