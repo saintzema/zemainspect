@@ -225,7 +225,10 @@
     "snapshotNoFrame": "No camera frame to capture yet.",
     "unsuitableDetail": "Colour reading {measured} is above the limit of {limit}. Draw a region around just the part, or raise the limit if this really is the surface you inspect.",
     "colourLimit": "Colour tolerance — {limit}",
-    "colourLimitHint": "How colourful a frame may be before it is rejected. Greyscale steel reads near 0; a room or a person reads well above 20."
+    "colourLimitHint": "How colourful a frame may be before it is rejected. Greyscale steel reads near 0; a room or a person reads well above 20.",
+    "categoryUnavailable": "No detection model is deployed for “{category}” on this account. The bundled model is trained on steel surfaces only — inspecting another product type needs a model trained on that product.",
+    "categoryUnavailableShort": "No model deployed for this category",
+    "noModelSuffix": "no model yet"
   },
   "trends": {
     "title": "Defect trends",

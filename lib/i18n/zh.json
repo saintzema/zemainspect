@@ -225,7 +225,10 @@
     "snapshotNoFrame": "尚无可截取的摄像头画面。",
     "unsuitableDetail": "色彩读数 {measured} 高于上限 {limit}。请仅框选工件区域，若这确实是待检表面，也可调高上限。",
     "colourLimit": "色彩容差 — {limit}",
-    "colourLimitHint": "画面色彩超过此值即被排除。灰度钢材接近 0；房间或人物通常远高于 20。"
+    "colourLimitHint": "画面色彩超过此值即被排除。灰度钢材接近 0；房间或人物通常远高于 20。",
+    "categoryUnavailable": "本账户尚未部署适用于「{category}」的检测模型。内置模型仅针对钢材表面训练——检测其他产品类型需要使用针对该产品训练的模型。",
+    "categoryUnavailableShort": "该类别尚未部署模型",
+    "noModelSuffix": "暂无模型"
   },
   "trends": {
     "title": "缺陷趋势",

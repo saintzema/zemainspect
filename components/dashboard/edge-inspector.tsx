@@ -28,12 +28,12 @@ import {
   GlassSelect,
 } from "@/components/ui/glass";
 import {
-  WEB_MODEL_VARIANT,
   edgeBackend,
   loadWebSession,
   runWebInference,
 } from "@/lib/inference/onnx-web";
 import { PRODUCT_CATEGORIES, labelFor } from "@/lib/inference/labels";
+import { isCategoryAvailable, modelForCategory } from "@/lib/inference/model-registry";
 import { DEFAULT_CONFIDENCE, type Detection } from "@/lib/inference/postprocess";
 import { playClearTone, playDefectAlert } from "@/lib/inference/alert-sound";
 import { severityColor, severityTone } from "@/lib/inference/severity";
@@ -123,6 +123,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const colourLimitRef = useRef(DEFAULT_MAX_COLOURFULNESS);
   const trackerRef = useRef(new DetectionTracker({ confirmFrames: DEFAULT_CONFIRM_FRAMES }));
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const draftRoiRef = useRef<Roi | null>(null);
 
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -153,6 +154,9 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   useEffect(() => {
     roiRef.current = roi;
   }, [roi]);
+  useEffect(() => {
+    draftRoiRef.current = draftRoi;
+  }, [draftRoi]);
   useEffect(() => {
     guardFramesRef.current = guardFrames;
   }, [guardFrames]);
@@ -428,6 +432,15 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
     }
   }, [composeSnapshot, lineId, t]);
 
+  /*
+   * The category selects the model, not just a label on the stored result.
+   * Before this, choosing 'automotive part' ran the steel weights and
+   * reported NEU steel classes on a car part — a dropdown making a claim
+   * the system could not honour.
+   */
+  const activeModel = modelForCategory(category, modelUrl);
+  const categoryReady = isCategoryAvailable(category, modelUrl);
+
   const isFailing = status === "running" && detections.length > 0;
 
   const stop = useCallback(() => {
@@ -475,7 +488,19 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
        * defects outside it are invisible by design and would otherwise look
        * like the detector missing them.
        */
-      const activeRoi = draftRoi ?? roi;
+      /*
+       * Read the region from refs, not from state closed over by this
+       * callback.
+       *
+       * The inspection loop captures drawOverlay once when start() runs. If
+       * this depended on `roi`, a region drawn mid-run would recreate the
+       * callback while the loop kept calling the original — so inference
+       * (which reads roiRef) would honour the new region while the overlay
+       * kept drawing the old one. That is exactly the reported symptom: the
+       * operator drags, the sidebar says "Inspecting a region", and no box
+       * ever appears; then Clear region leaves the old boxes on screen.
+       */
+      const activeRoi = draftRoiRef.current ?? roiRef.current;
       if (!isFullFrame(activeRoi)) {
         const safe = normaliseRoi(activeRoi);
         const rx = safe.x * width;
@@ -497,7 +522,12 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
         ctx.fill("evenodd");
         ctx.restore();
 
-        ctx.strokeStyle = draftRoi ? "rgba(96, 165, 250, 0.95)" : "rgba(148, 163, 184, 0.9)";
+        // Ref, not state — same reason as activeRoi above: this callback is
+        // captured once by the running loop and must never close over a value
+        // that changes underneath it.
+        ctx.strokeStyle = draftRoiRef.current
+          ? "rgba(96, 165, 250, 0.95)"
+          : "rgba(148, 163, 184, 0.9)";
         ctx.lineWidth = lineWidth;
         ctx.setLineDash([lineWidth * 4, lineWidth * 3]);
         ctx.strokeRect(rx, ry, rw, rh);
@@ -547,7 +577,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
         ctx.fillText(text, x + padding, labelY + (boxH - Math.max(12, width / 44)) / 2);
       }
     },
-    [language, roi, draftRoi],
+    [language],
   );
   /*
    * Repaint the ROI mask when it changes while the camera is idle. The
@@ -563,7 +593,12 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   }, [roi, draftRoi, status, drawOverlay]);
 
   const start = useCallback(async () => {
-    if (!modelUrl) return;
+    if (!activeModel.modelUrl) {
+      // Refuse rather than silently inspecting with the wrong weights.
+      setStatus("error");
+      setError(t("edge.categoryUnavailable", { category: t(`categories.${category}`) }));
+      return;
+    }
     setError(null);
     setStatus("loading");
 
@@ -595,7 +630,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "environment" },
           audio: false,
         }),
-        sessionRef.current ? Promise.resolve(sessionRef.current) : loadWebSession(modelUrl),
+        sessionRef.current ? Promise.resolve(sessionRef.current) : loadWebSession(activeModel.modelUrl),
       ]);
 
       if (cameraResult.status === "fulfilled" && sessionResult.status !== "fulfilled") {
@@ -642,7 +677,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               {
                 confidenceThreshold: sensitivityRef.current,
                 roi: roiRef.current,
-                guardFrames: guardFramesRef.current,
+                guardFrames: guardFramesRef.current && activeModel.expectsGreyscale,
                 suitability: { maxColourfulness: colourLimitRef.current },
               },
             );
@@ -669,7 +704,12 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               setLatency(result.processingTimeMs);
               lastInferenceMs = result.processingTimeMs;
               drawOverlay([], video.videoWidth, video.videoHeight);
-              rafRef.current = requestAnimationFrame(() => void loop());
+              // Same paced scheduler as the normal path. This branch used to
+              // chain rAF directly, which meant a feed the guard rejects on
+              // every frame — a colourful scene, exactly the case this
+              // branch exists for — never rested at all and starved the
+              // compositor, freezing the picture it was trying to explain.
+              scheduleNext(lastInferenceMs);
               return;
             }
 
@@ -712,21 +752,25 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
           }
         }
 
-        /*
-         * Yield long enough for the browser to actually paint before the next
-         * inference seizes the thread again. setTimeout rather than a bare
-         * rAF chain: rAF fires before paint, so chaining straight back into a
-         * blocking inference starves the compositor entirely.
-         */
+        scheduleNext(lastInferenceMs);
+      };
+
+      /*
+       * Yield long enough for the browser to actually paint before the next
+       * inference seizes the thread again. setTimeout rather than a bare rAF
+       * chain: rAF fires before paint, so chaining straight back into a
+       * blocking inference starves the compositor entirely.
+       */
+      function scheduleNext(inferenceMs: number) {
         const rest = Math.min(
           MAX_PAINT_REST_MS,
-          Math.max(MIN_PAINT_REST_MS, lastInferenceMs * PAINT_REST_RATIO),
+          Math.max(MIN_PAINT_REST_MS, inferenceMs * PAINT_REST_RATIO),
         );
         window.setTimeout(() => {
           if (!runningRef.current) return;
           rafRef.current = requestAnimationFrame(() => void loop());
         }, rest);
-      };
+      }
 
       const postResult = async (
         dets: Detection[],
@@ -754,7 +798,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
             product_category: category,
             line_id: lineId || undefined,
             processing_time_ms: ms,
-            model_variant: `${WEB_MODEL_VARIANT}-${edgeBackend()}`,
+            model_variant: `${activeModel.variant}-${edgeBackend()}`,
             thumbnail,
           }),
         }).catch(() => undefined);
@@ -765,7 +809,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       setStatus("error");
       setError(err instanceof Error ? err.message : t("edge.noCamera"));
     }
-  }, [modelUrl, t, drawOverlay, upload, category, lineId]);
+  }, [activeModel, t, drawOverlay, upload, category, lineId]);
 
   if (!modelUrl) {
     return (
@@ -818,7 +862,13 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               {t("edge.stop")}
             </GlassButton>
           ) : (
-            <GlassButton size="sm" onClick={() => void start()} loading={status === "loading"}>
+            <GlassButton
+              size="sm"
+              onClick={() => void start()}
+              loading={status === "loading"}
+              disabled={!categoryReady}
+              title={categoryReady ? undefined : t("edge.categoryUnavailableShort")}
+            >
               <Camera className="h-3.5 w-3.5" aria-hidden />
               {status === "loading"
                 ? t("edge.loadingModelElapsed", { seconds: loadingElapsedSec })
@@ -940,6 +990,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
               {PRODUCT_CATEGORIES.map((value) => (
                 <option key={value} value={value}>
                   {t(`categories.${value}`)}
+                  {isCategoryAvailable(value, modelUrl) ? "" : ` — ${t("edge.noModelSuffix")}`}
                 </option>
               ))}
             </GlassSelect>
