@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { syncSubscription } from "@/lib/billing/sync";
 import {
+  findPaystackSubscription,
   resolveTierFromEvent,
   verifyPaystackSignature,
 } from "@/lib/billing/paystack";
@@ -57,14 +58,48 @@ export async function POST(request: Request) {
           break;
         }
 
+        /*
+         * Remember the customer code. It is the only handle later events
+         * have on this organization: `subscription.create`,
+         * `subscription.disable` and the invoice events carry no metadata of
+         * ours, so `resolveOrganizationId` falls back to this lookup. It was
+         * being read there but never written anywhere, so that fallback
+         * could never succeed and those events were silently dropped.
+         */
+        const customer = data.customer as
+          | { id?: number; customer_code?: string }
+          | undefined;
+        if (customer?.customer_code) {
+          await prisma.organization
+            .update({
+              where: { id: organizationId },
+              data: { paystackCustomerCode: customer.customer_code },
+            })
+            .catch(() => undefined);
+        }
+
+        /*
+         * `charge.success` does not include the subscription code, so ask the
+         * API for it when it is missing. Without it `createPortalLink` has
+         * nothing to build a management link from and tells a paying customer
+         * they have no subscription.
+         */
+        let subscriptionCode: string | null = (data.subscription_code as string) ?? null;
+        let emailToken: string | null = (data.email_token as string) ?? null;
+        if (!subscriptionCode && customer?.id) {
+          const found = await findPaystackSubscription(customer.id, planCode);
+          subscriptionCode = found?.subscription_code ?? null;
+          emailToken = found?.email_token ?? null;
+        }
+
         await syncSubscription({
           organizationId,
           provider: "PAYSTACK",
           tier,
           status: "ACTIVE",
           currentPeriodEnd: readNextPaymentDate(data),
-          paystackSubscriptionCode: (data.subscription_code as string) ?? null,
-          paystackEmailToken: (data.email_token as string) ?? null,
+          paystackSubscriptionCode: subscriptionCode,
+          paystackEmailToken: emailToken,
           paystackPlanCode: planCode,
           resetCycle: true,
         });

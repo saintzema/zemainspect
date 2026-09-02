@@ -164,6 +164,50 @@ export function getPaystackPlan(planCode: string) {
   return paystackFetch<PaystackPlan>(`/plan/${encodeURIComponent(planCode)}`);
 }
 
+export interface PaystackSubscription {
+  subscription_code: string;
+  email_token: string;
+  status: string;
+  plan?: { plan_code?: string } | null;
+}
+
+/**
+ * Find the subscription Paystack created for a customer on a given plan.
+ *
+ * Needed because `charge.success` — the event that actually tells us money
+ * arrived — carries no `subscription_code` or `email_token`. Only
+ * `subscription.create` does, and relying on that alone is fragile: it has
+ * none of our metadata to identify the organization, and merchants routinely
+ * subscribe to a narrower set of events. Without the code, a paying customer
+ * is told "no active subscription to manage" — exactly what happened in
+ * production after a real Starter payment.
+ *
+ * Returns null rather than throwing: a missing management link must never
+ * fail the webhook, because Paystack would then retry a payment we have
+ * already recorded.
+ */
+export async function findPaystackSubscription(
+  customerId: number | string,
+  planCode?: string | null,
+): Promise<PaystackSubscription | null> {
+  try {
+    const subs = await paystackFetch<PaystackSubscription[]>(
+      `/subscription?customer=${encodeURIComponent(String(customerId))}&perPage=50`,
+    );
+    if (!Array.isArray(subs) || subs.length === 0) return null;
+
+    const active = subs.filter((s) => s.status === "active");
+    const pool = active.length > 0 ? active : subs;
+
+    // Prefer the subscription for the plan just billed — a customer who has
+    // upgraded has more than one on file.
+    return pool.find((s) => planCode && s.plan?.plan_code === planCode) ?? pool[0] ?? null;
+  } catch (err) {
+    console.warn("[zemainspect] Could not look up Paystack subscription:", err);
+    return null;
+  }
+}
+
 /**
  * Find or create the subscription plan for a tier.
  *

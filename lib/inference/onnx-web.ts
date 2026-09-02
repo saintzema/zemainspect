@@ -165,10 +165,25 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   ort.env.wasm.wasmPaths = "/ort/";
   ort.env.wasm.numThreads = 1;
   ort.env.logLevel = "error";
-  // Run the WASM backend in a worker. A frame takes a few hundred ms on CPU,
-  // which on the main thread would freeze the operator's UI between every
-  // inspection. Proxying keeps the page responsive on a low-end factory tablet.
-  ort.env.wasm.proxy = true;
+
+  /*
+   * Run the WASM backend in a worker. A frame takes a few hundred ms on CPU,
+   * which on the main thread would freeze the operator's UI between every
+   * inspection. Proxying keeps the page responsive on a low-end factory
+   * tablet — so it stays the default.
+   *
+   * It is an env flag because the proxy worker is also a real failure
+   * surface, and one we cannot recover from in-page: ORT reports a worker
+   * that fails to load as "no available backend found. ERR: [wasm] [object
+   * Event]" (an Event, not an Error — the signature of a worker/script load
+   * failure rather than anything thrown by our code), and its single-init
+   * guard means we cannot simply retry without the worker in the same tab.
+   * Setting NEXT_PUBLIC_ORT_PROXY=false runs inference on the main thread
+   * instead: the UI hitches for a second or so per frame, but there is no
+   * worker to fail to load. That is a worthwhile trade on a browser or
+   * locked-down network where the worker will not start at all.
+   */
+  ort.env.wasm.proxy = process.env.NEXT_PUBLIC_ORT_PROXY !== "false";
 
   /*
    * A dropped connection mid-download throws rather than returning a non-ok

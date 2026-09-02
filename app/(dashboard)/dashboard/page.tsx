@@ -46,12 +46,17 @@ export default async function DashboardPage() {
 
       <StatsRow stats={stats} />
 
+      {/*
+        Directly under the metrics: the inspector is what an operator opens
+        this page to start, and it should not sit below a feed that grows
+        without bound and pushes it off the screen.
+      */}
+      <EdgeInspector modelUrl={modelUrl} />
+
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         <InspectionFeed initialItems={items} />
         <UsageProgressBar usage={usage} showUpgrade={tier === "TRIAL" || tier === "STARTER"} />
       </div>
-
-      <EdgeInspector modelUrl={modelUrl} />
     </div>
   );
 }
