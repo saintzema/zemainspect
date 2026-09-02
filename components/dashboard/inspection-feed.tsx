@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { CircleCheck, CircleX, Download, Pause, Play } from "lucide-react";
 
 import { useTranslation } from "@/lib/i18n/language-context";
@@ -11,24 +12,52 @@ import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 5000;
 
+/**
+ * How often new results may trigger a server re-render.
+ *
+ * The counters above this feed (inspections, pass rate, defect rate, average
+ * latency) and the usage bar beside it are rendered on the server when the
+ * page loads. This list polls its own endpoint, so it used to be the only
+ * thing that moved: an operator running the edge inspector watched results
+ * stream in below a headline that still read "Inspections 0" and "0 of 5,000
+ * used". The numbers contradicted the list directly underneath them.
+ *
+ * `router.refresh()` re-runs the server component and updates all of it. It
+ * is throttled well above the poll interval because it costs a full render
+ * and several queries, and those counters do not need per-second precision.
+ */
+const STATS_REFRESH_INTERVAL_MS = 15000;
+
 export function InspectionFeed({ initialItems }: { initialItems: FeedItem[] }) {
   const { t, language } = useTranslation();
+  const router = useRouter();
   const [items, setItems] = useState(initialItems);
   const [live, setLive] = useState(true);
   // Held in a ref so the polling effect never re-subscribes on data change.
   const latestAt = useRef(initialItems[0]?.createdAt ?? null);
+  const lastStatsRefreshAt = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/api/inspections?limit=40", { cache: "no-store" });
       if (!res.ok) return;
       const data = (await res.json()) as { items: FeedItem[] };
+      const newest = data.items[0]?.createdAt ?? null;
+      const hasNewResults = newest !== null && newest !== latestAt.current;
+
       setItems(data.items);
-      latestAt.current = data.items[0]?.createdAt ?? latestAt.current;
+      latestAt.current = newest ?? latestAt.current;
+
+      // Only when something actually arrived, and not more than once per
+      // interval — a quiet line should cost nothing beyond this poll.
+      if (hasNewResults && Date.now() - lastStatsRefreshAt.current > STATS_REFRESH_INTERVAL_MS) {
+        lastStatsRefreshAt.current = Date.now();
+        router.refresh();
+      }
     } catch {
       // A dropped poll is not worth surfacing; the next tick retries.
     }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (!live) return;
