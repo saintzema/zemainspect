@@ -102,6 +102,13 @@
     "tierENTERPRISE": "Enterprise",
     "trialLength": "14 days"
   },
+  "docs": {
+    "title": "Connect ZemaInspect to your line",
+    "getKey": "Create an API key",
+    "onThisPage": "On this page",
+    "helpTitle": "Something not covered here?",
+    "helpBody": "Send us the request you are trying to make and the response you got back. We answer with working code, not a ticket number."
+  },
   "auth": {
     "signInTitle": "Sign in to ZemaInspect",
     "signInSubtitle": "Use your work email or a Google account.",

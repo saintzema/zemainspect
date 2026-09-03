@@ -102,6 +102,13 @@
     "tierENTERPRISE": "企业版",
     "trialLength": "14 天"
   },
+  "docs": {
+    "title": "将 ZemaInspect 接入贵厂产线",
+    "getKey": "创建 API 密钥",
+    "onThisPage": "本页目录",
+    "helpTitle": "没找到需要的内容？",
+    "helpBody": "请把您正在发送的请求和收到的响应发给我们。我们回复的是可直接运行的代码，而不是一个工单编号。"
+  },
   "auth": {
     "signInTitle": "登录 ZemaInspect",
     "signInSubtitle": "使用您的工作邮箱或 Google 账号。",
