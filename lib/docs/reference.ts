@@ -243,6 +243,100 @@ const batch: DocSection = {
   ],
 };
 
+const cameras: DocSection = {
+  id: "cameras",
+  title: L("Connecting a CCTV or line camera", "接入 CCTV 或产线相机"),
+  blocks: [
+    {
+      kind: "p",
+      text: L(
+        "The dashboard's Edge inspector runs the model inside a browser tab, so it only ever sees a webcam attached to whatever device is running that browser. It cannot reach an RTSP feed from a CCTV encoder, a GigE/USB machine-vision camera bolted over the line, or an existing NVR's output — the cameras most plants already have. The line-camera bridge below is the other side of the same POST /v1/inspect API: it reads frames from a camera on the shop floor and posts them the same way any other integration would.",
+        "控制台中的边缘检测运行在浏览器标签页内，因此只能识别运行该浏览器的设备本身所连接的摄像头，无法读取 CCTV 编码器的 RTSP 流、安装在产线上的 GigE/USB 机器视觉相机，或现有 NVR 的输出——而这些恰恰是大多数工厂已经在用的设备。下方的产线相机桥接工具是同一个 POST /v1/inspect 接口的另一端：它从车间的摄像头读取画面，并以与任何其他集成完全相同的方式提交。",
+      ),
+    },
+    {
+      kind: "list",
+      items: [
+        L(
+          "bridge.py — reads frames and posts them. No GPU needed; inference runs on our server.",
+          "bridge.py —— 读取画面并提交检测。无需 GPU，推理在服务端完成。",
+        ),
+        L(
+          "bridge.example.ini — copy to bridge.ini and fill in your camera source, API key and line name.",
+          "bridge.example.ini —— 复制为 bridge.ini 后填入您的摄像头地址、API 密钥与产线名称。",
+        ),
+        L(
+          "README.md — full setup guide: a systemd unit for a Linux line PC, Task Scheduler notes for Windows.",
+          "README.md —— 完整安装指南，含 Linux 产线工控机的 systemd 服务配置与 Windows 任务计划程序说明。",
+        ),
+      ],
+    },
+    {
+      kind: "code",
+      language: "bash",
+      caption: L(
+        "Download, install, and point it at a camera.",
+        "下载、安装，并指向一台摄像头。",
+      ),
+      code: `curl -O https://zemainspect.vercel.app/downloads/line-camera-bridge/bridge.py
+curl -O https://zemainspect.vercel.app/downloads/line-camera-bridge/requirements.txt
+pip install -r requirements.txt
+
+python3 bridge.py \\
+  --source rtsp://192.168.1.50:554/stream1 \\
+  --base-url https://zemainspect.vercel.app \\
+  --api-key zi_live_... \\
+  --line-id PRESS-SHOP-1`,
+    },
+    {
+      kind: "p",
+      text: L(
+        "--source accepts an RTSP URL, an HTTP MJPEG stream, a USB webcam by device index (0, 1, ...), or a video file — point it at a clip of the part first to prove the whole path end to end before wiring a real camera.",
+        "--source 参数支持 RTSP 地址、HTTP MJPEG 流、按设备编号指定的 USB 摄像头（0、1……），或一段视频文件——建议先用工件的视频片段跑通全流程，再接入真实摄像头。",
+      ),
+    },
+    {
+      kind: "h3",
+      text: L("Finding your camera's RTSP URL", "查找摄像头的 RTSP 地址"),
+    },
+    {
+      kind: "table",
+      head: [L("Brand", "品牌"), L("Typical RTSP URL", "典型 RTSP 地址")],
+      rows: [
+        [
+          L("Hikvision", "海康威视"),
+          L(
+            "rtsp://<user>:<pass>@<ip>:554/Streaming/Channels/101",
+            "rtsp://<用户名>:<密码>@<IP>:554/Streaming/Channels/101",
+          ),
+        ],
+        [
+          L("Dahua", "大华"),
+          L(
+            "rtsp://<user>:<pass>@<ip>:554/cam/realmonitor?channel=1&subtype=0",
+            "rtsp://<用户名>:<密码>@<IP>:554/cam/realmonitor?channel=1&subtype=0",
+          ),
+        ],
+      ],
+    },
+    {
+      kind: "p",
+      text: L(
+        "Adjust the channel number for another camera on a multi-channel NVR. If the path isn't documented on the device itself, the vendor's own configuration tool (iVMS-4200 for Hikvision, SmartPSS for Dahua) shows the exact stream URL under the camera's network settings. A GigE Vision or USB3 machine-vision camera (Basler, Hikrobot, MindVision) typically registers as a standard V4L2/DirectShow device once its vendor driver is installed, so --source 0 (or 1, 2, ...) usually works for those too.",
+        "多通道 NVR 上的其他摄像头可调整 channel 编号。若设备本身未标注路径，可在厂商配置工具（海康 iVMS-4200、大华 SmartPSS）的网络设置中查看确切的流地址。Basler、海康机器人、MindVision 等 GigE Vision 或 USB3 工业相机，安装厂商驱动后通常会注册为标准 V4L2/DirectShow 设备，此时 --source 0（或 1、2……）通常同样适用。",
+      ),
+    },
+    {
+      kind: "note",
+      tone: "info",
+      text: L(
+        "Results reach your MES/ERP the same way regardless of which camera fed them in: configure a result webhook once (below) and every inspection from every line, bridge or browser, reaches it identically.",
+        "无论画面来自哪种摄像头，结果都会以同样的方式送达贵方的 MES / ERP：只需配置一次结果 Webhook（见下文），来自任意产线、桥接工具或浏览器的每一条检测结果都会以相同方式送达。",
+      ),
+    },
+  ],
+};
+
 const webhooks: DocSection = {
   id: "webhooks",
   title: L("Webhooks", "Webhook 回调"),
@@ -554,6 +648,7 @@ export const DOC_SECTIONS: readonly DocSection[] = [
   auth,
   inspect,
   batch,
+  cameras,
   webhooks,
   alerts,
   errors,
