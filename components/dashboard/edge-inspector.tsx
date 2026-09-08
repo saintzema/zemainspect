@@ -42,7 +42,7 @@ import { FULL_FRAME, isDegenerate, isFullFrame, normaliseRoi, type Roi } from "@
 import {
   DEFAULT_MAX_COLOURFULNESS,
   DEFAULT_MAX_SPECULAR_FRACTION,
-  DEFAULT_MIN_GRID_EDGE_DENSITY,
+  DEFAULT_MIN_GRID_PERIODICITY,
   type SuitabilityVerdict,
 } from "@/lib/inference/frame-suitability";
 import { cn } from "@/lib/utils";
@@ -1069,8 +1069,16 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
           {unsuitable?.reason === "man_made_pattern" && (
             <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">
               {t("edge.unsuitableDetailPattern", {
-                measured: Math.round((unsuitable.stats.gridEdgeDensity ?? 0) * 100),
-                limit: Math.round(DEFAULT_MIN_GRID_EDGE_DENSITY * 100),
+                // Both axes must clear the limit to trigger this reason, so
+                // the weaker of the two is the number closer to the edge —
+                // the more informative one to show.
+                measured: Math.round(
+                  Math.min(
+                    unsuitable.stats.gridRowPeriodicity ?? 0,
+                    unsuitable.stats.gridColPeriodicity ?? 0,
+                  ) * 100,
+                ),
+                limit: Math.round(DEFAULT_MIN_GRID_PERIODICITY * 100),
               })}
             </p>
           )}

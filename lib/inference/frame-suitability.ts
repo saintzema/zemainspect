@@ -56,33 +56,23 @@ export interface FrameStats {
   /** Fraction of sampled pixels that are blown-out — glare or a hot reflection. */
   specularFraction: number;
   /**
-   * Of the frame's strong local edges, the fraction that run purely
-   * horizontal or purely vertical in the image's own coordinate frame.
-   * Reported for diagnostics; NOT what separates a grid from a few isolated
-   * defects (see gridBalance) — an isolated square-ish defect scores just as
-   * axis-aligned as a grid cell does. Null when `frameStats` was not given
-   * the frame's width and height (cannot be computed from a flat pixel
-   * sample), or when there were too few strong edges to judge anything from.
+   * How strongly the frame repeats itself moving down the image (row to
+   * row) — 1.0 is a perfect repeat, 0 is no self-similarity at any spacing.
+   * A real grid (a keyboard, a PCB) and a directional streak (a
+   * rolling-direction scratch) both score high here; only a grid also scores
+   * high on gridColPeriodicity. Null when `frameStats` was not given the
+   * frame's width and height (cannot be computed from a flat pixel sample),
+   * or when the sampled frame was too flat to measure repetition in at all.
    */
-  gridAxisAlignedFraction: number | null;
+  gridRowPeriodicity: number | null;
   /**
-   * What fraction of the sampled frame is covered by strong local structure
-   * at all — the actual grid-vs-defects discriminator. A real grid (a
-   * keyboard, a PCB) fills roughly half the sampling grid; a handful of
-   * isolated defects fill a twentieth of it, however axis-aligned or evenly
-   * split those few edges are. Null under the same conditions as
-   * gridAxisAlignedFraction.
+   * The same measure moving across the image (column to column). A
+   * directional streak that runs the same the whole way across scores near 0
+   * here, however strongly it repeats down the image — this is what tells a
+   * scratch apart from a grid. Null under the same conditions as
+   * gridRowPeriodicity.
    */
-  gridEdgeDensity: number | null;
-  /**
-   * Of the frame's axis-aligned edges, how evenly split they are between
-   * "mostly horizontal edge" and "mostly vertical edge" (0 = all one
-   * direction, up to 0.5 = perfectly even). A one-directional streak — a
-   * scratch, a rolling-direction mark — scores near 0 here however dense it
-   * is; only a real 2-D grid scores high on both density and this at once.
-   * Null under the same conditions as gridAxisAlignedFraction.
-   */
-  gridBalance: number | null;
+  gridColPeriodicity: number | null;
 }
 
 /** The frame's pixel dimensions, needed only for the grid-structure check. */
@@ -116,33 +106,26 @@ export const DEFAULT_MIN_CONTRAST = 6;
  */
 export const DEFAULT_MAX_SPECULAR_FRACTION = 0.06;
 /**
- * Measured against the two cases that motivated this check: a real keyboard
- * covers roughly half of the sampling grid's interior nodes with a strong
- * edge (0.50-0.53 in testing); a handful of isolated steel defects — the case
- * this must NOT reject — covers barely a twentieth of it (0.06). The
- * threshold sits well inside that gap, not at either edge of it.
+ * How strongly a row (or column) profile clusters into repeating phases —
+ * 1.0 means grouping by some spacing explains all of the variance (a perfect
+ * repeat), 0 means it explains none. Real grids at a range of pitches scored
+ * a clean 1.0 in testing; genuinely textured or defect-bearing content —
+ * isotropic noise at several grain sizes, scattered isolated defects at
+ * several counts and layouts, a real lighting gradient, a radial vignette —
+ * topped out at 0.48 across dozens of randomised trials. The threshold sits
+ * well inside that gap, close to the clean signal rather than splitting the
+ * difference, since the cost of missing an unusually coarse or heavily
+ * defect-covered grid is far lower than the cost of rejecting a real,
+ * paying inspection.
+ *
+ * This is the second design this check went through, not the first — see
+ * `periodicity`'s doc comment for what the first two attempts got wrong and
+ * why.
  */
-export const DEFAULT_MIN_GRID_EDGE_DENSITY = 0.18;
-/**
- * Below this, the axis-aligned edges are all one direction — a directional
- * streak, not a grid — however dense the structure is. This is what lets a
- * rolling-direction scratch (balance 0 in testing, however dense) through
- * while still catching a keyboard (balance 0.26-0.35). Density alone is not
- * enough: a scattering of small, individually-square defects also splits
- * close to evenly between horizontal and vertical edges (balance 0.44 in
- * testing) purely from each blob having a top, bottom, left and right edge —
- * it is excluded by density being far too low, not by this.
- */
-export const DEFAULT_MIN_GRID_BALANCE = 0.15;
+export const DEFAULT_MIN_GRID_PERIODICITY = 0.65;
 
 /** Coarse sampling grid for the structure check — cheap by construction. */
 const GRID_DIVISIONS = 20;
-/** Luma difference between neighbouring grid nodes counted as a real edge. */
-const GRID_EDGE_THRESHOLD = 18;
-/** Fraction of an edge's gradient that must sit on one axis to call it aligned. */
-const GRID_AXIS_DOMINANCE = 0.9;
-/** Fewer strong edges than this and there is nothing to judge structure from. */
-const MIN_STRUCTURED_EDGES = 8;
 /** Blown-out: within a few counts of full white. */
 const SPECULAR_LUMA_THRESHOLD = 246;
 
@@ -151,34 +134,102 @@ export interface SuitabilityOptions {
   minBrightness?: number;
   minContrast?: number;
   maxSpecularFraction?: number;
-  minGridEdgeDensity?: number;
-  minGridBalance?: number;
+  minGridPeriodicity?: number;
 }
 
 /**
- * Sample a coarse grid of luma values and score how much of the frame is
- * covered by strong, axis-aligned local structure, and how evenly that
- * structure splits between the two axes.
+ * How much of a sequence's variance is explained by grouping its samples
+ * into phases at the best-fitting repeat spacing — a simplified, cheap
+ * periodogram. For each candidate spacing P, group values by index mod P and
+ * measure what fraction of the total variance sits between those P group
+ * means rather than within them; return the best fraction found over every
+ * P tried. A signal that truly repeats every P samples clusters almost
+ * perfectly into P phases (ratio near 1); one that does not, however
+ * structured, does not.
+ *
+ * Two simpler measures were tried and rejected before this one, against
+ * fixtures built specifically to break each:
+ *
+ *   1. Raw autocorrelation at each lag. Fails on a lighting gradient or a
+ *      vignette — completely ordinary, benign camera conditions — because a
+ *      smooth monotonic trend correlates with a shifted copy of itself at
+ *      almost any lag purely from being smooth, with no repetition involved
+ *      at all. Measured 0.80-0.85 on a plain diagonal gradient: comparable
+ *      to a real keyboard.
+ *   2. The same, but on first differences (to remove a linear trend).
+ *      Fixes the straight-line gradient but not a vignette, whose falloff is
+ *      curved rather than linear — a smoothly curved trend's differences are
+ *      still smooth, so they still autocorrelate. Measured 0.89 on a radial
+ *      vignette.
+ *
+ * Phase-variance does not have this failure mode: a monotonic or smoothly
+ * curved trend does not cluster into repeating phases no matter what
+ * spacing is tried, because consecutive same-phase samples (P apart) still
+ * differ systematically along the trend. Measured 0.06-0.25 on the same
+ * gradient and vignette fixtures that broke the first two attempts.
+ *
+ * The candidate range is capped at n/3 rather than n/2 deliberately: fewer
+ * than three repeats of a spacing over-fits on a small sample — a handful of
+ * isolated defects or a patch of noise can look deceptively "periodic" at a
+ * spacing with only two samples per phase, purely by chance. Capping at n/3
+ * measured against dozens of randomised noise and scattered-defect layouts
+ * pulled the worst case down from as high as 0.74 to 0.48, at the cost of no
+ * longer catching a grid whose own repeat spacing is wider than that —
+ * missing an unusually coarse grid is a far cheaper mistake than rejecting a
+ * real, paying inspection.
+ */
+function periodicity(values: Float32Array): number {
+  const n = values.length;
+  let grandMean = 0;
+  for (let i = 0; i < n; i++) grandMean += values[i];
+  grandMean /= n;
+
+  let totalVariance = 0;
+  for (let i = 0; i < n; i++) totalVariance += (values[i] - grandMean) * (values[i] - grandMean);
+  if (totalVariance < 1e-6) return 0; // flat sequence — no structure to cluster
+
+  let best = 0;
+  const maxPeriod = Math.floor(n / 3);
+  for (let period = 2; period <= maxPeriod; period++) {
+    const sums = new Float32Array(period);
+    const counts = new Int32Array(period);
+    for (let i = 0; i < n; i++) {
+      const phase = i % period;
+      sums[phase] += values[i];
+      counts[phase] += 1;
+    }
+
+    let betweenPhaseVariance = 0;
+    for (let phase = 0; phase < period; phase++) {
+      const phaseMean = sums[phase] / counts[phase];
+      betweenPhaseVariance += counts[phase] * (phaseMean - grandMean) * (phaseMean - grandMean);
+    }
+
+    const ratio = betweenPhaseVariance / totalVariance;
+    if (ratio > best) best = ratio;
+  }
+  return best;
+}
+
+/**
+ * Sample a coarse grid of luma values and measure how strongly the frame
+ * repeats itself along each axis.
  *
  * Runs on a fixed 20x20 grid of single-pixel samples regardless of the
  * frame's resolution — 400 lookups — so unlike `frameStats`'s per-pixel pass
- * it does not need a `step` parameter to stay cheap.
- *
- * Density, not axis-alignment fraction, is what actually separates "a grid"
- * from "a few isolated defects": tested against real fixtures, an isolated
- * blob's edges are just as axis-aligned and just as evenly split between
- * horizontal and vertical as a keyboard's (each blob has a top, a bottom, a
- * left and a right edge, same as a grid cell does) — the two are
- * indistinguishable by shape alone. What differs is coverage: a grid's
- * structure fills roughly half the sampled frame; a handful of defects fill
- * a twentieth of it.
+ * it does not need a `step` parameter to stay cheap. A real 2-D grid — a
+ * keyboard, a PCB, packaging — repeats along BOTH axes; a directional streak
+ * (a rolling-direction scratch) repeats along only one; isotropic texture,
+ * however strong its local contrast, does not meaningfully repeat along
+ * either, because nothing about random variation has a fixed spacing to
+ * autocorrelate against.
  */
 function gridStructure(
   rgba: Uint8ClampedArray | Uint8Array,
   width: number,
   height: number,
-): { axisAlignedFraction: number | null; balance: number | null; density: number | null } {
-  const empty = { axisAlignedFraction: null, balance: null, density: null };
+): { rowPeriodicity: number | null; colPeriodicity: number | null } {
+  const empty = { rowPeriodicity: null, colPeriodicity: null };
   if (width < GRID_DIVISIONS * 2 || height < GRID_DIVISIONS * 2) {
     return empty;
   }
@@ -196,37 +247,23 @@ function gridStructure(
     }
   }
 
-  let strongEdges = 0;
-  let axisAligned = 0;
-  let horizontalDominant = 0; // edge runs horizontally (vertical gradient)
-  let verticalDominant = 0; // edge runs vertically (horizontal gradient)
-  const interiorNodes = (rows - 2) * (cols - 2);
-
-  for (let r = 1; r < rows - 1; r++) {
-    for (let c = 1; c < cols - 1; c++) {
-      const gx = luma[r * cols + c + 1] - luma[r * cols + c - 1];
-      const gy = luma[(r + 1) * cols + c] - luma[(r - 1) * cols + c];
-      const magnitude = Math.sqrt(gx * gx + gy * gy);
-      if (magnitude < GRID_EDGE_THRESHOLD) continue;
-
-      strongEdges += 1;
-      const axisDominance = Math.max(Math.abs(gx), Math.abs(gy)) / magnitude;
-      if (axisDominance >= GRID_AXIS_DOMINANCE) {
-        axisAligned += 1;
-        if (Math.abs(gy) >= Math.abs(gx)) horizontalDominant += 1;
-        else verticalDominant += 1;
-      }
-    }
+  const rowMeans = new Float32Array(rows);
+  for (let r = 0; r < rows; r++) {
+    let sum = 0;
+    for (let c = 0; c < cols; c++) sum += luma[r * cols + c];
+    rowMeans[r] = sum / cols;
   }
 
-  if (strongEdges < MIN_STRUCTURED_EDGES) {
-    return empty;
+  const colMeans = new Float32Array(cols);
+  for (let c = 0; c < cols; c++) {
+    let sum = 0;
+    for (let r = 0; r < rows; r++) sum += luma[r * cols + c];
+    colMeans[c] = sum / rows;
   }
 
   return {
-    axisAlignedFraction: axisAligned / strongEdges,
-    balance: Math.min(horizontalDominant, verticalDominant) / strongEdges,
-    density: strongEdges / interiorNodes,
+    rowPeriodicity: periodicity(rowMeans),
+    colPeriodicity: periodicity(colMeans),
   };
 }
 
@@ -238,9 +275,9 @@ function gridStructure(
  * cost more than the inference it is protecting.
  *
  * `dimensions` is optional and only needed for the grid-structure fields
- * (gridAxisAlignedFraction / gridEdgeDensity / gridBalance), which require
- * 2-D neighbour lookups a flat sampled pass cannot give them. Omit it and
- * those three fields come back null — every other statistic is unaffected.
+ * (gridRowPeriodicity / gridColPeriodicity), which require 2-D neighbour
+ * lookups a flat sampled pass cannot give them. Omit it and those two fields
+ * come back null — every other statistic is unaffected.
  */
 export function frameStats(
   rgba: Uint8ClampedArray | Uint8Array,
@@ -283,9 +320,8 @@ export function frameStats(
       brightness: 0,
       contrast: 0,
       specularFraction: 0,
-      gridAxisAlignedFraction: null,
-      gridEdgeDensity: null,
-      gridBalance: null,
+      gridRowPeriodicity: null,
+      gridColPeriodicity: null,
     };
   }
 
@@ -305,16 +341,15 @@ export function frameStats(
 
   const structure = dimensions
     ? gridStructure(rgba, dimensions.width, dimensions.height)
-    : { axisAlignedFraction: null, balance: null, density: null };
+    : { rowPeriodicity: null, colPeriodicity: null };
 
   return {
     colourfulness: stdRoot + 0.3 * meanRoot,
     brightness: meanLuma,
     contrast: Math.sqrt(varLuma),
     specularFraction: specularCount / n,
-    gridAxisAlignedFraction: structure.axisAlignedFraction,
-    gridEdgeDensity: structure.density,
-    gridBalance: structure.balance,
+    gridRowPeriodicity: structure.rowPeriodicity,
+    gridColPeriodicity: structure.colPeriodicity,
   };
 }
 
@@ -329,8 +364,7 @@ export function assessFrame(
     minBrightness = DEFAULT_MIN_BRIGHTNESS,
     minContrast = DEFAULT_MIN_CONTRAST,
     maxSpecularFraction = DEFAULT_MAX_SPECULAR_FRACTION,
-    minGridEdgeDensity = DEFAULT_MIN_GRID_EDGE_DENSITY,
-    minGridBalance = DEFAULT_MIN_GRID_BALANCE,
+    minGridPeriodicity = DEFAULT_MIN_GRID_PERIODICITY,
   } = options;
 
   const stats = frameStats(rgba, 7, dimensions);
@@ -342,10 +376,10 @@ export function assessFrame(
     return { suitable: false, stats, reason: "colour" };
   }
   if (
-    stats.gridEdgeDensity !== null &&
-    stats.gridBalance !== null &&
-    stats.gridEdgeDensity > minGridEdgeDensity &&
-    stats.gridBalance > minGridBalance
+    stats.gridRowPeriodicity !== null &&
+    stats.gridColPeriodicity !== null &&
+    stats.gridRowPeriodicity > minGridPeriodicity &&
+    stats.gridColPeriodicity > minGridPeriodicity
   ) {
     return { suitable: false, stats, reason: "man_made_pattern" };
   }
@@ -359,4 +393,29 @@ export function assessFrame(
     return { suitable: false, stats, reason: "too_flat" };
   }
   return { suitable: true, stats, reason: null };
+}
+
+/**
+ * A plain-English explanation of a rejection reason, for the REST API's error
+ * responses. Distinct from the operator-facing i18n strings in en.json /
+ * zh.json (edge.unsuitable_*) — this is a developer-facing API message, in
+ * the same voice as the API's other error messages ("Images must be under
+ * 12MB"), not a translated UI label.
+ */
+export function reasonMessage(reason: SuitabilityVerdict["reason"]): string {
+  switch (reason) {
+    case "colour":
+      return "The image does not look like a greyscale steel surface — it has too much colour.";
+    case "man_made_pattern":
+      return "The image looks like a manufactured object (a regular grid pattern, like a keyboard, " +
+        "PCB, or packaging), not raw steel.";
+    case "glare":
+      return "The image has too much glare or reflection to inspect reliably.";
+    case "too_dark":
+      return "The image is too dark to inspect.";
+    case "too_flat":
+      return "The image has too little surface detail to inspect — a blank or out-of-focus frame.";
+    case null:
+      return "";
+  }
 }

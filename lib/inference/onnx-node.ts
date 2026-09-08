@@ -1,6 +1,11 @@
 import sharp from "sharp";
 
-import { loadModelBytes, modelVariantName } from "@/lib/inference/model-source";
+import {
+  classNamesFor,
+  loadModelBytes,
+  loadModelBytesFor,
+  modelVariantNameFor,
+} from "@/lib/inference/model-source";
 import {
   MODEL_INPUT_SIZE,
   decodeYolov8,
@@ -8,6 +13,7 @@ import {
   type LetterboxInfo,
 } from "@/lib/inference/postprocess";
 import { letterboxToTensor } from "@/lib/inference/preprocess";
+import type { ProductCategory } from "@/lib/inference/labels";
 
 // onnxruntime-node ships native binaries. Import lazily so that merely loading
 // this module (e.g. during a build trace) never triggers binding resolution.
@@ -16,30 +22,56 @@ type OrtSession = import("onnxruntime-node").InferenceSession;
 
 let ortPromise: Promise<OrtModule> | null = null;
 let sessionPromise: Promise<OrtSession> | null = null;
+/** Sessions for a category other than steel — kept separate so a second
+ * category's weights never evict steel's already-warm session. */
+const categorySessions = new Map<ProductCategory, Promise<OrtSession>>();
 
 function ort(): Promise<OrtModule> {
   if (!ortPromise) ortPromise = import("onnxruntime-node");
   return ortPromise;
 }
 
-async function session(): Promise<OrtSession> {
-  if (sessionPromise) return sessionPromise;
-
-  sessionPromise = (async () => {
-    const [runtime, bytes] = await Promise.all([ort(), loadModelBytes()]);
-    return runtime.InferenceSession.create(bytes, {
+function buildSession(bytes: Uint8Array): Promise<OrtSession> {
+  return ort().then((runtime) =>
+    runtime.InferenceSession.create(bytes, {
       executionProviders: ["cpu"],
       graphOptimizationLevel: "all",
       // A single inference per request; extra threads only add contention on
       // the 1-2 vCPUs a serverless function gets.
       intraOpNumThreads: 1,
+    }),
+  );
+}
+
+async function session(): Promise<OrtSession> {
+  if (sessionPromise) return sessionPromise;
+
+  sessionPromise = loadModelBytes()
+    .then(buildSession)
+    .catch((err) => {
+      sessionPromise = null;
+      throw err;
     });
-  })().catch((err) => {
-    sessionPromise = null;
-    throw err;
-  });
 
   return sessionPromise;
+}
+
+/** The session for `category` — the existing single-session cache for
+ * steel, a separate memoised session per other category. */
+function sessionFor(category: ProductCategory): Promise<OrtSession> {
+  if (category === "steel") return session();
+
+  const inflight = categorySessions.get(category);
+  if (inflight) return inflight;
+
+  const promise = loadModelBytesFor(category)
+    .then(buildSession)
+    .catch((err) => {
+      categorySessions.delete(category);
+      throw err;
+    });
+  categorySessions.set(category, promise);
+  return promise;
 }
 
 export interface PreprocessResult {
@@ -80,16 +112,21 @@ export interface InferenceOutcome {
   modelVariant: string;
 }
 
-/** Run the bundled YOLOv8n NEU model over one image buffer. */
+/** Run the model for `category` (steel by default) over one image buffer. */
 export async function runInference(
   imageBuffer: Buffer,
-  options: { confidenceThreshold?: number; iouThreshold?: number } = {},
+  options: {
+    confidenceThreshold?: number;
+    iouThreshold?: number;
+    category?: ProductCategory;
+  } = {},
 ): Promise<InferenceOutcome> {
+  const category = options.category ?? "steel";
   const started = Date.now();
 
   const [runtime, sess, { data, box }] = await Promise.all([
     ort(),
-    session(),
+    sessionFor(category),
     preprocessImage(imageBuffer),
   ]);
 
@@ -105,17 +142,15 @@ export async function runInference(
   const result = await sess.run({ [inputName]: tensor });
   const output = result[outputName];
 
-  const detections = decodeYolov8(
-    output.data as Float32Array,
-    output.dims,
-    box,
-    options,
-  );
+  const detections = decodeYolov8(output.data as Float32Array, output.dims, box, {
+    ...options,
+    classNames: classNamesFor(category),
+  });
 
   return {
     detections,
     processingTimeMs: Date.now() - started,
-    modelVariant: modelVariantName(),
+    modelVariant: modelVariantNameFor(category),
   };
 }
 

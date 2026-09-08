@@ -198,6 +198,14 @@ const inspect: DocSection = {
         "若响应中出现 \"degraded\": true，表示高精度服务不可达，该请求由本地模型完成。结果依然有效；这是提示检查网络链路的信号，而非停线信号。",
       ),
     },
+    {
+      kind: "note",
+      tone: "warn",
+      text: L(
+        "A frame that is readable but doesn't resemble the trained surface — too colourful, too much glare, or shaped like a manufactured grid (a keyboard, a PCB, packaging) rather than steel — is rejected before inference runs, as a 422 frame_unsuitable rather than a fabricated pass or fail. A fixed line camera aimed even slightly off-part will produce this; check the mount, not the model.",
+        "画面可读但不像训练所用表面——色彩过多、反光过强，或呈键盘、电路板、包装等规则网格而非钢材——会在推理前被拒绝，返回 422 frame_unsuitable，而不是编造一个合格/不合格结果。产线相机哪怕轻微偏离工件都可能触发此项，应检查安装角度而非怀疑模型本身。",
+      ),
+    },
   ],
 };
 
@@ -441,6 +449,14 @@ const errors: DocSection = {
           L("422", "422"),
           L("inference_failed", "inference_failed"),
           L("The file was not a readable image", "文件不是可解析的图像"),
+        ],
+        [
+          L("422", "422"),
+          L("frame_unsuitable", "frame_unsuitable"),
+          L(
+            "Readable, but doesn't look like the trained surface — colour, glare, or a manufactured grid pattern (a keyboard, PCB, packaging) instead of steel. The response's reason field names which.",
+            "图像可读，但不像训练所用的表面——存在色彩、反光，或呈规则网格（如键盘、电路板、包装）而非钢材纹理。响应体的 reason 字段会说明具体原因。",
+          ),
         ],
         [
           L("429", "429"),

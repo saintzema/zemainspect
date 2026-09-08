@@ -5,6 +5,7 @@ import path from "path";
 import os from "os";
 
 import { env, envOr, hasEnv } from "@/lib/env";
+import { NEU_CLASSES, type ProductCategory } from "@/lib/inference/labels";
 
 /**
  * Where the ONNX weights come from, in priority order:
@@ -17,6 +18,16 @@ import { env, envOr, hasEnv } from "@/lib/env";
  *
  * Hosting the weights on Hugging Face costs nothing and keeps large binaries
  * out of git; committing them keeps the deploy hermetic. Both work.
+ *
+ * This covers "steel" only — the one model this deployment ships by default.
+ * `categoryModelUrl` / `categoryClasses` below are the server-side mirror of
+ * `lib/inference/model-registry.ts` on the client: a `product_category` of
+ * "general" or "automotive" server-side used to run these same steel weights
+ * and report steel defect class names against whatever was actually
+ * submitted — a car door reported as "38% patches" — because nothing here
+ * ever looked at the category at all. `categoryIsConfigured` is what a
+ * caller must check before running inference, the same way the browser
+ * checks `isCategoryAvailable` before enabling Start.
  */
 
 export { MODEL_INPUT_SIZE } from "@/lib/inference/postprocess";
@@ -145,4 +156,70 @@ export function modelIsConfigured(): boolean {
 
 export function modelVariantName(): string {
   return envOr("MODEL_VARIANT", "yolov8n-neu-onnx");
+}
+
+/* ---------------------------------------------------------------------- *
+ * Per-category models — see the module doc comment above.
+ * ---------------------------------------------------------------------- */
+
+function categoryModelUrl(category: ProductCategory): string | null {
+  return env(`MODEL_URL_${category.toUpperCase()}`) ?? null;
+}
+
+function categoryClasses(category: ProductCategory): readonly string[] | null {
+  const raw = env(`MODEL_CLASSES_${category.toUpperCase()}`);
+  if (!raw) return null;
+  const parsed = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : null;
+}
+
+/** True when this deployment can actually run inference for `category`. */
+export function categoryIsConfigured(category: ProductCategory): boolean {
+  if (category === "steel") return modelIsConfigured();
+  return categoryModelUrl(category) !== null && categoryClasses(category) !== null;
+}
+
+/** Class names in the index order the category's model was trained with. */
+export function classNamesFor(category: ProductCategory): readonly string[] {
+  if (category === "steel") return NEU_CLASSES;
+  return categoryClasses(category) ?? [];
+}
+
+export function modelVariantNameFor(category: ProductCategory): string {
+  if (category === "steel") return modelVariantName();
+  return `custom-${category}`;
+}
+
+const categoryBytesCache = new Map<ProductCategory, Promise<Uint8Array>>();
+
+/**
+ * Resolve the ONNX weights for `category`, memoised per category for the
+ * lifetime of the process — the same caching `loadModelBytes` already does
+ * for steel, just keyed so a second category never evicts the first.
+ */
+export function loadModelBytesFor(category: ProductCategory): Promise<Uint8Array> {
+  if (category === "steel") return loadModelBytes();
+
+  const inflightForCategory = categoryBytesCache.get(category);
+  if (inflightForCategory) return inflightForCategory;
+
+  const url = categoryModelUrl(category);
+  if (!url) {
+    return Promise.reject(
+      new ModelUnavailableError(
+        `No model deployed for product_category="${category}". Set MODEL_URL_${category.toUpperCase()} ` +
+          `and MODEL_CLASSES_${category.toUpperCase()} to enable it.`,
+      ),
+    );
+  }
+
+  const promise = loadFromUrl(url).catch((err) => {
+    categoryBytesCache.delete(category);
+    throw err;
+  });
+  categoryBytesCache.set(category, promise);
+  return promise;
 }

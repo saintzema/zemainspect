@@ -74,3 +74,69 @@ describe("model file resolution", () => {
     expect(modelIsConfigured()).toBe(false);
   });
 });
+
+/*
+ * The server-side counterpart to lib/inference/model-registry.ts on the
+ * client: before this, product_category was accepted, stored on the
+ * InspectionJob row, and never once consulted — a request for "automotive"
+ * silently ran the bundled steel weights and reported steel defect class
+ * names against whatever was actually submitted.
+ */
+describe("category model resolution", () => {
+  afterEach(() => {
+    delete process.env.MODEL_URL_GENERAL;
+    delete process.env.MODEL_CLASSES_GENERAL;
+    delete process.env.MODEL_URL_AUTOMOTIVE;
+    delete process.env.MODEL_CLASSES_AUTOMOTIVE;
+    delete process.env.MODEL_FILE;
+    delete process.env.MODEL_URL;
+  });
+
+  it("steel is configured exactly when the bundled/default model resolution says so", async () => {
+    const { categoryIsConfigured } = await import("@/lib/inference/model-source");
+    expect(categoryIsConfigured("steel")).toBe(modelIsConfigured());
+  });
+
+  it("reports no model for a category nothing is configured for", async () => {
+    const { categoryIsConfigured } = await import("@/lib/inference/model-source");
+    expect(categoryIsConfigured("automotive")).toBe(false);
+    expect(categoryIsConfigured("general")).toBe(false);
+  });
+
+  it("never serves the NEU steel classes for another category", async () => {
+    process.env.MODEL_URL_GENERAL = "https://cdn.example.com/general.onnx";
+    process.env.MODEL_CLASSES_GENERAL = "crack, dent , burr";
+    const { classNamesFor } = await import("@/lib/inference/model-source");
+    expect(classNamesFor("general")).toEqual(["crack", "dent", "burr"]);
+    expect(classNamesFor("general")).not.toEqual(classNamesFor("steel"));
+  });
+
+  it("requires classes as well as a URL — weights alone cannot be labelled", async () => {
+    process.env.MODEL_URL_AUTOMOTIVE = "https://cdn.example.com/auto.onnx";
+    const { categoryIsConfigured } = await import("@/lib/inference/model-source");
+    expect(categoryIsConfigured("automotive")).toBe(false);
+
+    process.env.MODEL_CLASSES_AUTOMOTIVE = "weld_gap,porosity";
+    expect(categoryIsConfigured("automotive")).toBe(true);
+  });
+
+  it("treats a blank class list as unset", async () => {
+    process.env.MODEL_URL_GENERAL = "https://cdn.example.com/general.onnx";
+    process.env.MODEL_CLASSES_GENERAL = "   ";
+    const { categoryIsConfigured } = await import("@/lib/inference/model-source");
+    expect(categoryIsConfigured("general")).toBe(false);
+  });
+
+  it("names a custom category's variant distinctly from steel's", async () => {
+    process.env.MODEL_URL_GENERAL = "https://cdn.example.com/general.onnx";
+    process.env.MODEL_CLASSES_GENERAL = "crack";
+    const { modelVariantNameFor } = await import("@/lib/inference/model-source");
+    expect(modelVariantNameFor("general")).toBe("custom-general");
+    expect(modelVariantNameFor("steel")).not.toBe("custom-steel");
+  });
+
+  it("rejects loadModelBytesFor for an unconfigured category rather than silently loading steel", async () => {
+    const { loadModelBytesFor } = await import("@/lib/inference/model-source");
+    await expect(loadModelBytesFor("automotive")).rejects.toThrow(/No model deployed/);
+  });
+});

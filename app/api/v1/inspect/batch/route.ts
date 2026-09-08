@@ -96,6 +96,7 @@ export async function POST(request: Request) {
       const buffer = Buffer.from(await file.arrayBuffer());
       const outcome = await inspect(buffer, {
         tier,
+        category: params.product_category,
         filename: file.name || "frame.jpg",
         contentType: file.type || "image/jpeg",
       });

@@ -233,7 +233,7 @@
     "snapshotSavedCloud": "截图已下载并存档至云端。",
     "snapshotNoFrame": "尚无可截取的摄像头画面。",
     "unsuitableDetail": "色彩读数 {measured} 高于上限 {limit}。请仅框选工件区域，若这确实是待检表面，也可调高上限。",
-    "unsuitableDetailPattern": "网格状结构覆盖画面的 {measured}%，超过原材料应有的 {limit}% 上限。请将镜头对准工件本身，而非包装、屏幕或键盘。",
+    "unsuitableDetailPattern": "该画面呈规则重复图案，一致性达 {measured}%，超过原材料应有的 {limit}% 上限。请将镜头对准工件本身，而非包装、屏幕或键盘。",
     "unsuitableDetailGlare": "反光覆盖画面的 {measured}%，超过 {limit}% 上限。请调整光源或拍摄角度以消除反光。",
     "colourLimit": "色彩容差 — {limit}",
     "colourLimitHint": "画面色彩超过此值即被排除。灰度钢材接近 0；房间或人物通常远高于 20。",

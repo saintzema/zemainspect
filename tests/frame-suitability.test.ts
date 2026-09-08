@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_MAX_COLOURFULNESS,
+  DEFAULT_MIN_GRID_PERIODICITY,
   assessFrame,
   frameStats,
 } from "@/lib/inference/frame-suitability";
@@ -99,6 +100,34 @@ const steelWithScratch = () =>
     return [v, v, v];
   });
 
+/**
+ * A real hash, not a smooth ramp — deliberately high-frequency, uncorrelated
+ * per-pixel noise standing in for genuine photographic grain/speckle. An
+ * earlier version of this fixture used a low-order polynomial in x and y,
+ * which "looks" textured but measured a real standard deviation of only
+ * 5.76 — just under DEFAULT_MIN_CONTRAST — so it never actually exercised
+ * the grid check at a realistic contrast. This is the fixture that caught a
+ * genuine flaw during development: strong, dense, isotropic texture like
+ * this scored just as dense and just as axis-balanced as a real keyboard
+ * under the first version of this check (density-and-balance), because
+ * random variation is equally likely to produce edges split evenly between
+ * horizontal and vertical as a repeating grid is. Periodicity — does the
+ * pattern actually repeat at a fixed spacing — is what correctly tells them
+ * apart; this fixture is what proves it.
+ */
+function noise(x: number, y: number): number {
+  let h = (x * 374761393 + y * 668265263) ^ 0x9e3779b9;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h = h ^ (h >>> 16);
+  return ((h >>> 0) % 1000) / 1000;
+}
+
+const texturedSteel = () =>
+  makeImage(400, 400, (x, y) => {
+    const v = Math.max(40, Math.min(210, 120 + Math.floor((noise(x, y) - 0.5) * 70)));
+    return [v, v, v];
+  });
+
 describe("frameStats", () => {
   it("reports near-zero colourfulness for a greyscale frame", () => {
     // Every channel equal means rg and yb are identically zero, which is the
@@ -140,9 +169,8 @@ describe("frameStats", () => {
       brightness: 0,
       contrast: 0,
       specularFraction: 0,
-      gridAxisAlignedFraction: null,
-      gridEdgeDensity: null,
-      gridBalance: null,
+      gridRowPeriodicity: null,
+      gridColPeriodicity: null,
     });
   });
 
@@ -159,36 +187,50 @@ describe("frameStats", () => {
 
   it("leaves grid fields null without dimensions — cannot judge 2-D structure from a flat sample", () => {
     const stats = frameStats(keyboardLike());
-    expect(stats.gridEdgeDensity).toBeNull();
-    expect(stats.gridBalance).toBeNull();
+    expect(stats.gridRowPeriodicity).toBeNull();
+    expect(stats.gridColPeriodicity).toBeNull();
   });
 
-  it("scores a keyboard grid as dense and balanced across both axes", () => {
-    // Density is the actual discriminator (see gridStructure's doc comment):
-    // a keyboard's grid lines cover roughly half the sampled frame, measured
-    // at 0.50-0.53 against this fixture.
+  it("scores a keyboard grid as strongly periodic along both axes", () => {
+    // A keyboard's grid lines repeat at a fixed spacing in both directions;
+    // measured as a clean 1.0 across every key pitch that fits the sampling
+    // grid's period cap in testing.
     const stats = frameStats(keyboardLike(), 7, { width: 200, height: 200 });
-    expect(stats.gridEdgeDensity).not.toBeNull();
-    expect(stats.gridEdgeDensity!).toBeGreaterThan(0.4);
-    expect(stats.gridBalance!).toBeGreaterThan(0.15);
+    expect(stats.gridRowPeriodicity).not.toBeNull();
+    expect(stats.gridRowPeriodicity!).toBeGreaterThan(0.9);
+    expect(stats.gridColPeriodicity!).toBeGreaterThan(0.9);
   });
 
-  it("scores a directional steel scratch as dense but NOT balanced", () => {
-    // The critical negative case: a rolling-direction mark can be just as
-    // dense as a grid (every row bears the same mark), so density alone
-    // cannot tell it apart from one. Balance — near 0, since the structure
-    // is entirely one direction — is what must exclude it.
+  it("scores a directional steel scratch as periodic in one axis only", () => {
+    // The critical negative case: a rolling-direction mark repeats down the
+    // image just as strongly as a grid does, so row-periodicity alone
+    // cannot tell it apart from one. Column periodicity — exactly 0, since
+    // nothing at all varies moving across a row — is what must exclude it.
     const stats = frameStats(steelWithScratch(), 7, { width: 200, height: 200 });
-    expect(stats.gridEdgeDensity).not.toBeNull();
-    expect(stats.gridBalance!).toBeLessThan(0.15);
+    expect(stats.gridRowPeriodicity).not.toBeNull();
+    expect(stats.gridRowPeriodicity!).toBeGreaterThan(0.9);
+    expect(stats.gridColPeriodicity!).toBe(0);
   });
 
-  it("scores a scattering of isolated defects as balanced but NOT dense", () => {
-    // The other critical negative case: a handful of small, individually
-    // square defects splits close to evenly between horizontal and vertical
-    // edges too (each blob has all four), so balance alone cannot exclude
-    // them either. Coverage is what must: real steel defects are localised,
-    // not spread across half the frame.
+  it("scores strong, isotropic texture as low-periodicity on both axes", () => {
+    // The flaw an earlier (density-and-balance) version of this check had,
+    // caught during development: dense, evenly axis-split structure is not
+    // unique to a grid — genuinely random texture with real contrast
+    // produces exactly that too, purely by chance, however strong. This
+    // fixture has real contrast (~20, well above DEFAULT_MIN_CONTRAST) and
+    // would have been wrongly rejected by that version; it must not be
+    // rejected by this one, whose threshold is calibrated with real margin
+    // above what texture like this measures (see the constant's own doc
+    // comment for the numbers).
+    const stats = frameStats(texturedSteel(), 7, { width: 400, height: 400 });
+    expect(stats.gridRowPeriodicity).not.toBeNull();
+    expect(stats.gridRowPeriodicity!).toBeLessThan(DEFAULT_MIN_GRID_PERIODICITY);
+    expect(stats.gridColPeriodicity!).toBeLessThan(DEFAULT_MIN_GRID_PERIODICITY);
+  });
+
+  it("scores a scattering of isolated defects as low-periodicity", () => {
+    // A handful of small, individually square defects has no fixed spacing
+    // to repeat at either — real steel defects are localised, not periodic.
     const scattered = makeImage(200, 200, (x, y) => {
       const cx = cellIndex(x, 200);
       const cy = cellIndex(y, 200);
@@ -202,29 +244,58 @@ describe("frameStats", () => {
       return [v, v, v];
     });
     const stats = frameStats(scattered, 7, { width: 200, height: 200 });
-    expect(stats.gridEdgeDensity).not.toBeNull();
-    expect(stats.gridEdgeDensity!).toBeLessThan(0.18);
+    expect(stats.gridRowPeriodicity).not.toBeNull();
+    expect(stats.gridRowPeriodicity!).toBeLessThan(DEFAULT_MIN_GRID_PERIODICITY);
+    expect(stats.gridColPeriodicity!).toBeLessThan(DEFAULT_MIN_GRID_PERIODICITY);
   });
 
-  it("leaves grid fields null for a smooth frame with too little structure to judge", () => {
-    // A gentle brightness ramp: real width/height, but every neighbouring
-    // grid sample differs by far less than GRID_EDGE_THRESHOLD, so there is
-    // nothing to call an edge at all. Must report "not enough to judge"
-    // rather than a fabricated number from noise.
+  it("does not mistake a lighting gradient or vignette for a grid", () => {
+    // Completely ordinary, benign camera conditions on a real line — uneven
+    // illumination, a light off to one side, vignetting toward the frame
+    // edges — that broke the two simpler designs this check went through
+    // before landing on phase-variance (see `periodicity`'s doc comment).
+    // Both a straight gradient and a curved radial vignette must survive.
+    const gradient = makeImage(200, 200, (x, y) => {
+      const v = 80 + Math.floor((x / 200) * 40) + Math.floor((y / 200) * 40);
+      return [v, v, v];
+    });
+    expect(assessFrame(gradient, {}, { width: 200, height: 200 }).reason).not.toBe(
+      "man_made_pattern",
+    );
+
+    const vignette = makeImage(200, 200, (x, y) => {
+      const dx = x - 100;
+      const dy = y - 100;
+      const dist = Math.sqrt(dx * dx + dy * dy) / 140;
+      const v = 150 - Math.floor(dist * 80);
+      return [v, v, v];
+    });
+    expect(assessFrame(vignette, {}, { width: 200, height: 200 }).reason).not.toBe(
+      "man_made_pattern",
+    );
+  });
+
+  it("reports zero periodicity along an axis with no variation at all", () => {
+    // A gentle monotonic ramp across x, flat down y: rows are identical to
+    // each other (no row-to-row variation to measure repetition from, so
+    // gridRowPeriodicity is exactly 0 rather than a division-by-near-zero
+    // artifact), while columns vary monotonically — real variance, but no
+    // repetition, so a low score rather than null.
     const smooth = makeImage(200, 200, (x) => {
       const v = 80 + Math.floor(x / 40);
       return [v, v, v];
     });
     const stats = frameStats(smooth, 7, { width: 200, height: 200 });
-    expect(stats.gridEdgeDensity).toBeNull();
-    expect(stats.gridBalance).toBeNull();
+    expect(stats.gridRowPeriodicity).toBe(0);
+    expect(stats.gridColPeriodicity).not.toBeNull();
+    expect(stats.gridColPeriodicity!).toBeLessThan(DEFAULT_MIN_GRID_PERIODICITY);
   });
 
   it("leaves grid fields null when the frame is too small for the sampling grid", () => {
     const tiny = makeImage(16, 16, () => [90, 90, 90]);
     const stats = frameStats(tiny, 7, { width: 16, height: 16 });
-    expect(stats.gridEdgeDensity).toBeNull();
-    expect(stats.gridBalance).toBeNull();
+    expect(stats.gridRowPeriodicity).toBeNull();
+    expect(stats.gridColPeriodicity).toBeNull();
   });
 });
 
@@ -296,6 +367,15 @@ describe("assessFrame", () => {
     expect(verdict.reason).not.toBe("man_made_pattern");
   });
 
+  it("does NOT reject strongly textured, isotropic steel as a grid", () => {
+    // The regression this whole redesign exists to prevent: a genuinely
+    // textured surface, not a smooth one, must still be accepted. Caught
+    // during development against exactly this fixture — a real bug, not a
+    // hypothetical one.
+    const verdict = assessFrame(texturedSteel(), {}, { width: 400, height: 400 });
+    expect(verdict.reason).not.toBe("man_made_pattern");
+  });
+
   it("without dimensions, cannot catch the keyboard — documents the known gap", () => {
     // The grid check needs width/height. A caller that omits them (or a
     // model variant this check does not apply to) gets the pre-fix behaviour
@@ -324,7 +404,7 @@ describe("assessFrame", () => {
   it("honours caller-supplied grid and glare thresholds", () => {
     const keyboard = keyboardLike();
     expect(
-      assessFrame(keyboard, { minGridEdgeDensity: 1.1 }, { width: 200, height: 200 }).reason,
+      assessFrame(keyboard, { minGridPeriodicity: 1.1 }, { width: 200, height: 200 }).reason,
     ).not.toBe("man_made_pattern");
 
     const glare = makeFrame(2000, (i) => (i % 2 === 0 ? [252, 252, 252] : [95, 95, 95]));

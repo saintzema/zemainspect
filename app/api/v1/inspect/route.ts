@@ -4,9 +4,10 @@ import { z } from "zod";
 import { authenticateApiRequest } from "@/lib/api-auth";
 import { prisma } from "@/lib/prisma";
 import { recordInspectionUsage } from "@/lib/usage";
-import { inspect, verdictFor } from "@/lib/inference/engine";
+import { FrameUnsuitableError, inspect, verdictFor } from "@/lib/inference/engine";
 import { detectionsAsJson } from "@/lib/inference/postprocess";
 import { ModelUnavailableError } from "@/lib/inference/model-source";
+import { reasonMessage } from "@/lib/inference/frame-suitability";
 import { PRODUCT_CATEGORIES } from "@/lib/inference/labels";
 import { buildInspectionPayload, deliverWebhook } from "@/lib/webhooks";
 import { storeInspectionImage } from "@/lib/storage";
@@ -95,6 +96,7 @@ export async function POST(request: Request) {
   try {
     outcome = await inspect(buffer, {
       tier,
+      category: params.product_category,
       filename: file.name || "frame.jpg",
       contentType: file.type || "image/jpeg",
       confidenceThreshold: params.confidence,
@@ -104,6 +106,18 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: { code: "model_unavailable", message: err.message } },
         { status: 503 },
+      );
+    }
+    if (err instanceof FrameUnsuitableError) {
+      return NextResponse.json(
+        {
+          error: {
+            code: "frame_unsuitable",
+            message: reasonMessage(err.verdict.reason),
+            reason: err.verdict.reason,
+          },
+        },
+        { status: 422 },
       );
     }
     console.error("Inference failed:", err);
