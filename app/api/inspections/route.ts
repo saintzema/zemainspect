@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 
 import { requireOrgSession } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { recentInspections } from "@/lib/analytics";
 import { toCsv } from "@/lib/utils";
 
@@ -20,12 +22,15 @@ export async function GET(request: Request) {
   const limit = Number(url.searchParams.get("limit") ?? 40);
   const beforeParam = url.searchParams.get("before");
   const before = beforeParam ? new Date(beforeParam) : undefined;
+  const lineId = url.searchParams.get("lineId") ?? undefined;
+  const unreviewed = url.searchParams.get("unreviewed") === "true";
 
-  const items = await recentInspections(
-    session.user.organizationId!,
-    format === "csv" ? 1000 : limit,
-    before && !Number.isNaN(before.getTime()) ? before : undefined,
-  );
+  const items = await recentInspections(session.user.organizationId!, {
+    limit: format === "csv" ? 1000 : limit,
+    before: before && !Number.isNaN(before.getTime()) ? before : undefined,
+    lineId,
+    onlyUnreviewedFails: unreviewed,
+  });
 
   if (format === "csv") {
     const csv = toCsv(
@@ -44,6 +49,8 @@ export async function GET(request: Request) {
         inference_source: i.inferenceSource,
         processing_time_ms: i.processingTimeMs,
         image_url: i.imageUrl ?? "",
+        reviewed_at: i.reviewedAt ?? "",
+        reviewed_by: i.reviewedByName ?? "",
       })),
     );
 
@@ -58,4 +65,48 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json({ items });
+}
+
+const patchSchema = z.object({
+  reviewed: z.boolean(),
+});
+
+/**
+ * Mark one inspection reviewed (or un-reviewed, to undo a mis-click) — the
+ * action behind "which FAILs has nobody looked at yet" across several lines
+ * and shifts. Body carries the inspection id rather than a path segment
+ * because the feed already batches several of these per click on a
+ * multi-select; a single route handles both shapes without duplicating the
+ * ownership check.
+ */
+export async function PATCH(request: Request) {
+  const session = await requireOrgSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const url = new URL(request.url);
+  const id = url.searchParams.get("id");
+  if (!id) {
+    return NextResponse.json({ error: "?id=<inspection id> is required" }, { status: 400 });
+  }
+
+  const parsed = patchSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Provide { reviewed: boolean }" }, { status: 400 });
+  }
+
+  // Scoped by organizationId in the WHERE, not just checked after the fact:
+  // an update matching zero rows (wrong org) and one matching the right row
+  // must not be distinguishable by timing or response shape.
+  const result = await prisma.inspectionJob.updateMany({
+    where: { id, organizationId: session.user.organizationId! },
+    data: parsed.data.reviewed
+      ? { reviewedAt: new Date(), reviewedById: session.user.id }
+      : { reviewedAt: null, reviewedById: null },
+  });
+
+  if (result.count === 0) {
+    return NextResponse.json({ error: "Inspection not found" }, { status: 404 });
+  }
+
+  return NextResponse.json({ ok: true });
 }

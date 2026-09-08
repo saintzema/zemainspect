@@ -76,6 +76,8 @@ model User {
   accounts Account[]
   sessions Session[]
 
+  reviewedInspections InspectionJob[]
+
   createdAt    DateTime @default(now())
   lastActiveAt DateTime @default(now())
 
@@ -222,10 +224,21 @@ model InspectionJob {
   batchId String?
   batch   InspectionBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
+  /*
+   * A FAIL with no reviewedAt is an open item: a part flagged, not yet
+   * disposed of. Across several lines and shifts, "which fails has nobody
+   * looked at yet" is the actual daily question — separate from "which
+   * fails happened", which the feed already answers on its own.
+   */
+  reviewedAt   DateTime?
+  reviewedById String?
+  reviewedBy   User?     @relation(fields: [reviewedById], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
 
   @@index([organizationId, createdAt])
   @@index([organizationId, result, createdAt])
+  @@index([organizationId, lineId, result, reviewedAt])
   @@index([batchId])
 }
 

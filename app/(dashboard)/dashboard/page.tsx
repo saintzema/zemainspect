@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { recentInspections, summaryStats } from "@/lib/analytics";
+import { distinctLines, recentInspections, summaryStats } from "@/lib/analytics";
 import { usageFor } from "@/lib/usage";
 import { effectiveTier } from "@/lib/plans";
 import { publicModelUrl } from "@/lib/inference/model-source";
@@ -21,11 +21,12 @@ export default async function DashboardPage() {
 
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-  const [organization, stats, items, usage] = await Promise.all([
+  const [organization, stats, items, usage, lines] = await Promise.all([
     prisma.organization.findUniqueOrThrow({ where: { id: organizationId } }),
     summaryStats(organizationId, since),
-    recentInspections(organizationId, 40),
+    recentInspections(organizationId, { limit: 40 }),
     usageFor(organizationId),
+    distinctLines(organizationId),
   ]);
 
   const tier = effectiveTier(organization);
@@ -54,7 +55,7 @@ export default async function DashboardPage() {
       <EdgeInspector modelUrl={modelUrl} />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-        <InspectionFeed initialItems={items} />
+        <InspectionFeed initialItems={items} lines={lines} />
         <UsageProgressBar usage={usage} showUpgrade={tier === "TRIAL" || tier === "STARTER"} />
       </div>
     </div>

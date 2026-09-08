@@ -155,20 +155,37 @@ export interface FeedItem {
   inferenceSource: string;
   processingTimeMs: number;
   createdAt: string;
+  /** Null means open: a FAIL nobody has acted on yet. */
+  reviewedAt: string | null;
+  reviewedByName: string | null;
+}
+
+export interface RecentInspectionsFilter {
+  limit?: number;
+  before?: Date;
+  /** Exact match. Comes from the feed's own line filter, itself populated
+   * from distinctLines() below, so this is never arbitrary user text. */
+  lineId?: string;
+  /** FAIL rows with reviewedAt still null — the open work queue. */
+  onlyUnreviewedFails?: boolean;
 }
 
 export async function recentInspections(
   organizationId: string,
-  limit = 40,
-  before?: Date,
+  filter: RecentInspectionsFilter = {},
 ): Promise<FeedItem[]> {
+  const { limit = 40, before, lineId, onlyUnreviewedFails } = filter;
+
   const jobs = await prisma.inspectionJob.findMany({
     where: {
       organizationId,
       ...(before ? { createdAt: { lt: before } } : {}),
+      ...(lineId ? { lineId } : {}),
+      ...(onlyUnreviewedFails ? { result: "FAIL", reviewedAt: null } : {}),
     },
     orderBy: { createdAt: "desc" },
     take: Math.min(limit, 100),
+    include: { reviewedBy: { select: { name: true, email: true } } },
   });
 
   return jobs.map((j) => ({
@@ -182,7 +199,25 @@ export async function recentInspections(
     inferenceSource: j.inferenceSource,
     processingTimeMs: j.processingTimeMs,
     createdAt: j.createdAt.toISOString(),
+    reviewedAt: j.reviewedAt?.toISOString() ?? null,
+    reviewedByName: j.reviewedBy?.name ?? j.reviewedBy?.email ?? null,
   }));
+}
+
+/**
+ * Distinct line names this organization has actually inspected under,
+ * newest first. Backs the feed's line filter — a free-text dropdown built
+ * from what has really been submitted, not a guess.
+ */
+export async function distinctLines(organizationId: string): Promise<string[]> {
+  const rows = await prisma.inspectionJob.findMany({
+    where: { organizationId, lineId: { not: null } },
+    distinct: ["lineId"],
+    orderBy: { createdAt: "desc" },
+    select: { lineId: true },
+    take: 100,
+  });
+  return rows.map((r) => r.lineId!).filter(Boolean);
 }
 
 /**

@@ -187,7 +187,16 @@
     "trialExpired": "Your trial has ended. Upgrade to keep inspecting.",
     "upgradeCta": "Upgrade",
     "live": "Live",
-    "paused": "Paused"
+    "paused": "Paused",
+    "filterByLine": "Filter by line",
+    "allLines": "All lines",
+    "needsReview": "Needs review",
+    "noOpenItems": "Nothing open — every failed inspection has been reviewed.",
+    "reviewed": "Reviewed",
+    "open": "Open",
+    "markReviewed": "Mark reviewed",
+    "markUnreviewed": "Mark not reviewed",
+    "you": "You"
   },
   "edge": {
     "title": "Edge inspector",

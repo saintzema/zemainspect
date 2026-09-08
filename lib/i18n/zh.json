@@ -187,7 +187,16 @@
     "trialExpired": "试用已结束。升级后可继续检测。",
     "upgradeCta": "升级",
     "live": "实时",
-    "paused": "已暂停"
+    "paused": "已暂停",
+    "filterByLine": "按产线筛选",
+    "allLines": "全部产线",
+    "needsReview": "待处理",
+    "noOpenItems": "暂无待处理项——所有不合格记录均已复核。",
+    "reviewed": "已复核",
+    "open": "待处理",
+    "markReviewed": "标记为已复核",
+    "markUnreviewed": "标记为未复核",
+    "you": "我"
   },
   "edge": {
     "title": "边缘检测器",
