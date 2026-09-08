@@ -22,10 +22,80 @@ function makeFrame(
   return data;
 }
 
+/** Build a width x height RGBA buffer from a per-coordinate colour function. */
+function makeImage(
+  width: number,
+  height: number,
+  pixel: (x: number, y: number) => [number, number, number],
+): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const [r, g, b] = pixel(x, y);
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+      data[i + 3] = 255;
+    }
+  }
+  return data;
+}
+
 /** Greyscale, mid-brightness, textured — what NEU steel looks like. */
 const steelLike = () =>
   makeFrame(4000, (i) => {
     const v = 90 + ((i * 37) % 60);
+    return [v, v, v];
+  });
+
+/**
+ * The gridStructure() sampler reads one pixel per macro-cell of a 20x20
+ * partition of the frame. Defining a pattern in pixel-space at a period close
+ * to the sampler's own spacing aliases unpredictably — a period-20 keyboard
+ * sampled every 20 pixels can land on the same phase every time and never see
+ * a gap at all. Defining patterns directly in cell-index space sidesteps that
+ * entirely: whatever pixel the sampler reads for cell (c, r), it is guaranteed
+ * to be a pixel this function assigned deliberately, not an aliasing artifact.
+ */
+const CELLS = 20;
+function cellIndex(coord: number, size: number): number {
+  return Math.min(CELLS - 1, Math.floor((coord * CELLS) / size));
+}
+
+/**
+ * A dark keyboard: narrow dark gap-lines every 4 cells, both across and down
+ * — a real 2-D grid of key boundaries, with edges in comparable numbers
+ * along both axes. Desaturated and mid-contrast, same as steel, so only
+ * shape tells them apart. This is the production frame: a MacBook keyboard
+ * read as "Patches"/"Scratches" because the guard only ever checked colour.
+ *
+ * (A pure checkerboard — alternating every single cell — is the wrong model
+ * here: its edges run diagonally, not along either axis, and a central
+ * difference is exactly blind to a change that reverses again one step
+ * later. Real key gaps are a small fraction of the key pitch, which is what
+ * this reproduces.)
+ */
+const keyboardLike = () =>
+  makeImage(200, 200, (x, y) => {
+    const cx = cellIndex(x, 200);
+    const cy = cellIndex(y, 200);
+    const gap = cx % 4 === 3 || cy % 4 === 3;
+    const v = gap ? 20 : 70;
+    return [v, v, v];
+  });
+
+/**
+ * Rolled steel with a rolling-direction scratch: horizontal dark bands that
+ * span the full width, on an otherwise smooth grey field. Genuinely
+ * one-directional structure — brightness varies down each column but never
+ * across a row — the case the grid check must NOT reject, or it would blind
+ * the model to exactly the defects it exists to find.
+ */
+const steelWithScratch = () =>
+  makeImage(200, 200, (x, y) => {
+    const cy = cellIndex(y, 200);
+    const v = cy % 5 === 0 ? 55 : 110;
     return [v, v, v];
   });
 
@@ -69,7 +139,92 @@ describe("frameStats", () => {
       colourfulness: 0,
       brightness: 0,
       contrast: 0,
+      specularFraction: 0,
+      gridAxisAlignedFraction: null,
+      gridEdgeDensity: null,
+      gridBalance: null,
     });
+  });
+
+  it("reports a high specular fraction for a glare-blown patch", () => {
+    // Half the frame is a hot reflection; nothing else in the pixel data
+    // signals that except the blown-out luma itself.
+    const glare = makeFrame(2000, (i) => (i % 2 === 0 ? [252, 252, 252] : [95, 95, 95]));
+    expect(frameStats(glare).specularFraction).toBeGreaterThan(0.4);
+  });
+
+  it("reports near-zero specular fraction for an evenly-lit surface", () => {
+    expect(frameStats(steelLike()).specularFraction).toBeLessThan(0.01);
+  });
+
+  it("leaves grid fields null without dimensions — cannot judge 2-D structure from a flat sample", () => {
+    const stats = frameStats(keyboardLike());
+    expect(stats.gridEdgeDensity).toBeNull();
+    expect(stats.gridBalance).toBeNull();
+  });
+
+  it("scores a keyboard grid as dense and balanced across both axes", () => {
+    // Density is the actual discriminator (see gridStructure's doc comment):
+    // a keyboard's grid lines cover roughly half the sampled frame, measured
+    // at 0.50-0.53 against this fixture.
+    const stats = frameStats(keyboardLike(), 7, { width: 200, height: 200 });
+    expect(stats.gridEdgeDensity).not.toBeNull();
+    expect(stats.gridEdgeDensity!).toBeGreaterThan(0.4);
+    expect(stats.gridBalance!).toBeGreaterThan(0.15);
+  });
+
+  it("scores a directional steel scratch as dense but NOT balanced", () => {
+    // The critical negative case: a rolling-direction mark can be just as
+    // dense as a grid (every row bears the same mark), so density alone
+    // cannot tell it apart from one. Balance — near 0, since the structure
+    // is entirely one direction — is what must exclude it.
+    const stats = frameStats(steelWithScratch(), 7, { width: 200, height: 200 });
+    expect(stats.gridEdgeDensity).not.toBeNull();
+    expect(stats.gridBalance!).toBeLessThan(0.15);
+  });
+
+  it("scores a scattering of isolated defects as balanced but NOT dense", () => {
+    // The other critical negative case: a handful of small, individually
+    // square defects splits close to evenly between horizontal and vertical
+    // edges too (each blob has all four), so balance alone cannot exclude
+    // them either. Coverage is what must: real steel defects are localised,
+    // not spread across half the frame.
+    const scattered = makeImage(200, 200, (x, y) => {
+      const cx = cellIndex(x, 200);
+      const cy = cellIndex(y, 200);
+      const blob =
+        (cx === 3 && cy === 4) ||
+        (cx === 4 && cy === 4) ||
+        (cx === 10 && cy === 12) ||
+        (cx === 11 && cy === 13) ||
+        (cx === 15 && cy === 6);
+      const v = blob ? 60 : 105;
+      return [v, v, v];
+    });
+    const stats = frameStats(scattered, 7, { width: 200, height: 200 });
+    expect(stats.gridEdgeDensity).not.toBeNull();
+    expect(stats.gridEdgeDensity!).toBeLessThan(0.18);
+  });
+
+  it("leaves grid fields null for a smooth frame with too little structure to judge", () => {
+    // A gentle brightness ramp: real width/height, but every neighbouring
+    // grid sample differs by far less than GRID_EDGE_THRESHOLD, so there is
+    // nothing to call an edge at all. Must report "not enough to judge"
+    // rather than a fabricated number from noise.
+    const smooth = makeImage(200, 200, (x) => {
+      const v = 80 + Math.floor(x / 40);
+      return [v, v, v];
+    });
+    const stats = frameStats(smooth, 7, { width: 200, height: 200 });
+    expect(stats.gridEdgeDensity).toBeNull();
+    expect(stats.gridBalance).toBeNull();
+  });
+
+  it("leaves grid fields null when the frame is too small for the sampling grid", () => {
+    const tiny = makeImage(16, 16, () => [90, 90, 90]);
+    const stats = frameStats(tiny, 7, { width: 16, height: 16 });
+    expect(stats.gridEdgeDensity).toBeNull();
+    expect(stats.gridBalance).toBeNull();
   });
 });
 
@@ -122,5 +277,57 @@ describe("assessFrame", () => {
     // option is actually plumbed through rather than ignored.
     expect(assessFrame(steel, { maxColourfulness: -1 }).reason).toBe("colour");
     expect(assessFrame(steel, { minBrightness: 250 }).reason).toBe("too_dark");
+  });
+
+  it("rejects a keyboard — the production false-positive colour alone let through", () => {
+    // Dark and desaturated, same as steel, so this frame passed the old
+    // colour-only guard outright and produced a confident, persistent
+    // "Patches"/"Scratches" verdict on a real MacBook. Shape is what
+    // distinguishes it, so shape is what the guard now has to check.
+    const verdict = assessFrame(keyboardLike(), {}, { width: 200, height: 200 });
+    expect(verdict.suitable).toBe(false);
+    expect(verdict.reason).toBe("man_made_pattern");
+  });
+
+  it("does NOT reject a real rolling-direction steel scratch as a grid", () => {
+    // The one-directional case must survive, or the fix would blind the
+    // model to exactly the class of defect it exists to catch.
+    const verdict = assessFrame(steelWithScratch(), {}, { width: 200, height: 200 });
+    expect(verdict.reason).not.toBe("man_made_pattern");
+  });
+
+  it("without dimensions, cannot catch the keyboard — documents the known gap", () => {
+    // The grid check needs width/height. A caller that omits them (or a
+    // model variant this check does not apply to) gets the pre-fix behaviour
+    // back, not a crash — proving the new check degrades safely.
+    const verdict = assessFrame(keyboardLike());
+    expect(verdict.reason).not.toBe("man_made_pattern");
+  });
+
+  it("rejects a glare-blown frame — the production false 'Patches' hit sat on a reflection", () => {
+    const glare = makeFrame(2000, (i) => (i % 2 === 0 ? [252, 252, 252] : [95, 95, 95]));
+    const verdict = assessFrame(glare);
+    expect(verdict.suitable).toBe(false);
+    expect(verdict.reason).toBe("glare");
+  });
+
+  it("reports colour ahead of the grid and glare checks too", () => {
+    // A colourful frame that also happens to carry a grid pattern (printed
+    // packaging, a phone screen) should still get the most actionable reason.
+    const colourfulGrid = makeImage(200, 200, (x, y) => {
+      const key = x % 20 < 17 && y % 20 < 17;
+      return key ? [220, 40, 40] : [40, 60, 200];
+    });
+    expect(assessFrame(colourfulGrid, {}, { width: 200, height: 200 }).reason).toBe("colour");
+  });
+
+  it("honours caller-supplied grid and glare thresholds", () => {
+    const keyboard = keyboardLike();
+    expect(
+      assessFrame(keyboard, { minGridEdgeDensity: 1.1 }, { width: 200, height: 200 }).reason,
+    ).not.toBe("man_made_pattern");
+
+    const glare = makeFrame(2000, (i) => (i % 2 === 0 ? [252, 252, 252] : [95, 95, 95]));
+    expect(assessFrame(glare, { maxSpecularFraction: 0.9 }).reason).not.toBe("glare");
   });
 });

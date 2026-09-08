@@ -41,6 +41,8 @@ import { DetectionTracker, DEFAULT_CONFIRM_FRAMES } from "@/lib/inference/tempor
 import { FULL_FRAME, isDegenerate, isFullFrame, normaliseRoi, type Roi } from "@/lib/inference/roi";
 import {
   DEFAULT_MAX_COLOURFULNESS,
+  DEFAULT_MAX_SPECULAR_FRACTION,
+  DEFAULT_MIN_GRID_EDGE_DENSITY,
   type SuitabilityVerdict,
 } from "@/lib/inference/frame-suitability";
 import { cn } from "@/lib/utils";
@@ -1052,13 +1054,31 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
             surface" with no value behind it is unarguable — an operator
             pointing at a real part that gets rejected has no way to tell
             whether they are marginally over the line or nowhere near it, and
-            no basis for choosing a threshold.
+            no basis for choosing a threshold. Which number depends on which
+            check actually failed — showing the colour reading for a frame
+            rejected as glare would tell the operator nothing they can act on.
           */}
-          {unsuitable && (
+          {unsuitable?.reason === "colour" && (
             <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">
               {t("edge.unsuitableDetail", {
                 measured: unsuitable.stats.colourfulness.toFixed(1),
                 limit: colourLimit.toFixed(0),
+              })}
+            </p>
+          )}
+          {unsuitable?.reason === "man_made_pattern" && (
+            <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">
+              {t("edge.unsuitableDetailPattern", {
+                measured: Math.round((unsuitable.stats.gridEdgeDensity ?? 0) * 100),
+                limit: Math.round(DEFAULT_MIN_GRID_EDGE_DENSITY * 100),
+              })}
+            </p>
+          )}
+          {unsuitable?.reason === "glare" && (
+            <p className="rounded-xl bg-warn/10 px-3 py-2 text-xs text-warn">
+              {t("edge.unsuitableDetailGlare", {
+                measured: Math.round(unsuitable.stats.specularFraction * 100),
+                limit: Math.round(DEFAULT_MAX_SPECULAR_FRACTION * 100),
               })}
             </p>
           )}

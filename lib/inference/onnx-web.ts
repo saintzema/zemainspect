@@ -493,7 +493,9 @@ export async function runWebInference(
    * and should not veto an otherwise good inspection.
    */
   if (guardFrames) {
-    const verdict = assessFrame(rgba, suitability);
+    // region, not sourceWidth/sourceHeight: with a tight ROI, the grid and
+    // glare checks must judge the cropped part, not the full camera frame.
+    const verdict = assessFrame(rgba, suitability, region);
     if (!verdict.suitable) {
       return {
         detections: [],

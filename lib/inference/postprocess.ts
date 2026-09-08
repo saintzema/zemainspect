@@ -42,7 +42,14 @@ export interface DecodeOptions {
   classNames?: readonly string[];
 }
 
-export const DEFAULT_CONFIDENCE = 0.25;
+/**
+ * 0.25 is a common YOLO benchmark default, but a benchmark scores every
+ * detection against ground truth — a production line just sees the alert.
+ * Raised for a factory floor, where a hit at 25-30% confidence on a weak
+ * class (crazing, rolled-in_scale validate at only 50-56% mAP@0.5 even at
+ * their best) reads to an operator as a confirmed defect, not a maybe.
+ */
+export const DEFAULT_CONFIDENCE = 0.35;
 export const DEFAULT_IOU = 0.45;
 
 /**
