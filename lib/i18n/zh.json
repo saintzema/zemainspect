@@ -48,6 +48,7 @@
     "ctaPrimary": "免费试用",
     "ctaSecondary": "观看实时演示",
     "trustLine": "基于 NEU 表面缺陷数据库测评——mAP@0.5 达 73.6%，单帧耗时 2.1 毫秒。",
+    "trustLineLink": "查看各缺陷类型的具体精度",
     "howTitle": "工作原理",
     "how1Title": "对准摄像头",
     "how1Body": "产线上任意 USB 或 IP 摄像头即可，无需新增硬件或重新布线。",

@@ -48,6 +48,7 @@
     "ctaPrimary": "Start free trial",
     "ctaSecondary": "See live demo",
     "trustLine": "Benchmarked on the NEU Surface Defect Database — 73.6% mAP@0.5 at 2.1 ms per frame.",
+    "trustLineLink": "See accuracy by defect type",
     "howTitle": "How it works",
     "how1Title": "Point a camera",
     "how1Body": "Any USB or IP camera on the line. No new hardware, no rewiring.",

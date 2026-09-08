@@ -69,7 +69,12 @@ export default function LandingPage() {
             </Link>
           </div>
 
-          <p className="mt-6 text-xs text-ink-muted">{t("marketing.trustLine")}</p>
+          <p className="mt-6 text-xs text-ink-muted">
+            {t("marketing.trustLine")}{" "}
+            <Link href="/docs#coverage" className="underline underline-offset-2 hover:text-ink">
+              {t("marketing.trustLineLink")}
+            </Link>
+          </p>
         </div>
       </section>
 
