@@ -102,6 +102,22 @@ const WIDE_KEY = "zemainspect:edge-wide";
 const MIN_CONFIRM_FRAMES = 1;
 const MAX_CONFIRM_FRAMES = 5;
 
+/**
+ * Video constraints for a specific camera, or the browser's own default.
+ *
+ * `facingMode: "environment"` only matters on a device with more than one
+ * built-in camera (a phone); on a laptop with one webcam it is a no-op
+ * preference. `exact` on deviceId is deliberate, not `ideal`: if the operator
+ * picked a specific camera, silently substituting a different one when the
+ * chosen device is briefly busy is worse than a clear "camera unavailable"
+ * error they can act on.
+ */
+function videoConstraintsFor(deviceId: string): MediaTrackConstraints {
+  return deviceId
+    ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "environment" };
+}
+
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 
 export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
@@ -146,6 +162,44 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   const [draftRoi, setDraftRoi] = useState<Roi | null>(null);
   const [unsuitable, setUnsuitable] = useState<SuitabilityVerdict | null>(null);
   const [colourLimit, setColourLimit] = useState(DEFAULT_MAX_COLOURFULNESS);
+  /**
+   * "" means "let the browser pick" (its own default camera). A factory PC
+   * commonly has more than one video input attached — a laptop's built-in
+   * webcam plus a USB capture card feeding an existing line camera, for
+   * instance — and the browser's own default is not necessarily the one
+   * pointed at the part.
+   */
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState("");
+
+  /*
+   * Device labels are blank until camera permission has been granted at
+   * least once in this origin — a browser privacy protection, not a bug —
+   * so this is called again after every successful getUserMedia to pick up
+   * real names ("Logitech BRIO", "USB Video Device") once they become
+   * available, not just on mount.
+   */
+  const refreshCameraList = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setCameras(devices.filter((d) => d.kind === "videoinput"));
+    } catch {
+      // Some locked-down browsers refuse enumeration outright; the picker
+      // just falls back to "default camera" in that case.
+    }
+  }, []);
+
+  // Re-enumerate whenever a camera is plugged in or unplugged — a USB
+  // capture card appearing mid-session on a factory PC is a real scenario,
+  // not an edge case, and the picker should notice without a page reload.
+  useEffect(() => {
+    void refreshCameraList();
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices) return;
+    mediaDevices.addEventListener("devicechange", refreshCameraList);
+    return () => mediaDevices.removeEventListener("devicechange", refreshCameraList);
+  }, [refreshCameraList]);
 
   useEffect(() => {
     sensitivityRef.current = sensitivity;
@@ -470,6 +524,42 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
   // Always release the camera when the operator navigates away.
   useEffect(() => stop, [stop]);
 
+  /**
+   * Switch the active camera without tearing down the loaded model — the
+   * expensive part. Safe to call whether or not the loop is currently
+   * running: if it isn't, this just records the choice for the next Start.
+   *
+   * Old tracks are stopped only after the new stream is confirmed working:
+   * a picked device that is busy or has just been unplugged must not cost
+   * the operator the camera they already had running.
+   */
+  const switchCamera = useCallback(
+    async (deviceId: string) => {
+      setSelectedCameraId(deviceId);
+      if (!runningRef.current) return;
+
+      try {
+        const nextStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraintsFor(deviceId),
+          audio: false,
+        });
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = nextStream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = nextStream;
+          await videoRef.current.play();
+        }
+        // A defect confirmed on the old camera's view has no bearing on
+        // what a different physical camera now sees.
+        trackerRef.current.reset();
+        setDetections([]);
+        void refreshCameraList();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("edge.cameraSwitchFailed"));
+      }
+    },
+    [refreshCameraList, t],
+  );
 
   const drawOverlay = useCallback(
     (dets: Detection[], width: number, height: number) => {
@@ -629,11 +719,16 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
        */
       const [cameraResult, sessionResult] = await Promise.allSettled([
         navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "environment" },
+          video: videoConstraintsFor(selectedCameraId),
           audio: false,
         }),
         sessionRef.current ? Promise.resolve(sessionRef.current) : loadWebSession(activeModel.modelUrl),
       ]);
+
+      // Device labels are blank until permission is granted at least once;
+      // now that it has been, the picker can show real names instead of
+      // "Camera 1", "Camera 2".
+      if (cameraResult.status === "fulfilled") void refreshCameraList();
 
       if (cameraResult.status === "fulfilled" && sessionResult.status !== "fulfilled") {
         // Never hold a camera we aren't about to draw. Releasing the tracks
@@ -811,7 +906,7 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
       setStatus("error");
       setError(err instanceof Error ? err.message : t("edge.noCamera"));
     }
-  }, [activeModel, t, drawOverlay, upload, category, lineId]);
+  }, [activeModel, t, drawOverlay, upload, category, lineId, selectedCameraId, refreshCameraList]);
 
   if (!modelUrl) {
     return (
@@ -970,6 +1065,26 @@ export function EdgeInspector({ modelUrl }: { modelUrl: string | null }) {
         </div>
 
         <div className="space-y-3">
+          {cameras.length > 1 && (
+            <div>
+              <FieldLabel htmlFor="edge-camera" hint={t("edge.cameraHint")}>
+                {t("edge.camera")}
+              </FieldLabel>
+              <GlassSelect
+                id="edge-camera"
+                value={selectedCameraId}
+                onChange={(event) => void switchCamera(event.target.value)}
+              >
+                <option value="">{t("edge.defaultCamera")}</option>
+                {cameras.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `${t("edge.cameraFallbackLabel")} ${index + 1}`}
+                  </option>
+                ))}
+              </GlassSelect>
+            </div>
+          )}
+
           <div>
             <FieldLabel htmlFor="edge-line">{t("dashboard.line")}</FieldLabel>
             <GlassInput

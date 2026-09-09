@@ -147,6 +147,23 @@ async function warmupSession(
 
 const WEBGPU_INIT_TIMEOUT_MS = 8_000;
 /**
+ * Bounds `build("webgpu")` itself, not just its warmup.
+ *
+ * This did not exist until a real factory laptop hit it: `create()` had no
+ * timeout at all — only the warmup after it did — on the theory that a
+ * hung `create()` could not be safely abandoned anyway (see the big comment
+ * below on why a second `create()` call collides with ORT's single-init
+ * guard). That reasoning is correct for a still-*pending* `create()`, but it
+ * does not cover the call actually settling this slowly on a real, if weak,
+ * GPU — nothing was there to catch it, so "loading" ran forever with no
+ * error and no way to recover short of a reload the UI never told anyone to
+ * do. This does not change what happens once the timeout fires — a timed-out
+ * webgpu attempt still cannot safely fall back to WASM in the same page
+ * load, for the same collision reason as always — it only turns an
+ * unbounded, silent hang into a bounded, visible failure.
+ */
+const WEBGPU_CREATE_TIMEOUT_MS = 60_000;
+/**
  * onnxruntime-web's published "webgpu" bundle hardcodes its WASM binary
  * choice at the LIBRARY'S OWN build time — literally
  * `false ? jsep : false ? jspi : true ? asyncify : plain` in the shipped
@@ -179,23 +196,28 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   ort.env.logLevel = "error";
 
   /*
-   * Run the WASM backend in a worker. A frame takes a few hundred ms on CPU,
-   * which on the main thread would freeze the operator's UI between every
-   * inspection. Proxying keeps the page responsive on a low-end factory
-   * tablet — so it stays the default.
+   * Default OFF. Running the WASM backend in a worker keeps the UI
+   * responsive between frames — that is a real benefit — but the worker is
+   * also a failure surface this app cannot recover from in-page: a worker
+   * that fails to load surfaces as "no available backend found. ERR: [wasm]
+   * [object Event]" (an Event, not an Error — a script-load failure, not
+   * anything our code threw), and separately, this exact worker handoff is
+   * what produced "Failed to execute 'postMessage' on 'Worker': An
+   * ArrayBuffer is detached and could not be cloned" on real factory
+   * hardware — an antivirus product, a locked-down corporate network policy,
+   * or a browser security setting blocking or interfering with worker
+   * scripts in a way a normal page load never exercises. ORT's own
+   * single-init guard means neither failure can be retried without a full
+   * page reload.
    *
-   * It is an env flag because the proxy worker is also a real failure
-   * surface, and one we cannot recover from in-page: ORT reports a worker
-   * that fails to load as "no available backend found. ERR: [wasm] [object
-   * Event]" (an Event, not an Error — the signature of a worker/script load
-   * failure rather than anything thrown by our code), and its single-init
-   * guard means we cannot simply retry without the worker in the same tab.
-   * Setting NEXT_PUBLIC_ORT_PROXY=false runs inference on the main thread
-   * instead: the UI hitches for a second or so per frame, but there is no
-   * worker to fail to load. That is a worthwhile trade on a browser or
-   * locked-down network where the worker will not start at all.
+   * A live, one-shot demo in front of a factory's QA lead cannot afford
+   * either failure mode. Main-thread inference costs a visible stutter of a
+   * second or so per frame on a slow machine — worse UX, but it degrades,
+   * it never hangs and never throws a worker error there is no recovery
+   * from. Set NEXT_PUBLIC_ORT_PROXY=true only once the proxy path has been
+   * verified end to end on the specific hardware it will run on.
    */
-  ort.env.wasm.proxy = process.env.NEXT_PUBLIC_ORT_PROXY !== "false";
+  ort.env.wasm.proxy = process.env.NEXT_PUBLIC_ORT_PROXY === "true";
 
   /*
    * A dropped connection mid-download throws rather than returning a non-ok
@@ -282,13 +304,32 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
   const webgpuEnabled = process.env.NEXT_PUBLIC_ENABLE_WEBGPU === "true";
 
   if (webgpuEnabled && (await hasUsableGpu())) {
+    /*
+     * Tracks whether create()+warmup actually settled on their own, versus
+     * this code giving up on them via a timeout. That distinction is the
+     * whole safety argument for falling through to a second, WASM
+     * `create()` call below: it is only safe once nothing WebGPU-related
+     * can still be mid-flight. A rejection the promise reached by itself
+     * proves that; a timeout proves the opposite — the underlying call is
+     * still running, unobserved, and starting a second `create()` on top of
+     * it is exactly what trips ORT's "multiple calls to 'initWasm()'
+     * detected" guard (see the big comment above). So a timeout here must
+     * end this page's session attempt entirely, the same as a WASM timeout
+     * already does — never fall through underneath one.
+     */
+    let settledOnItsOwn = false;
     try {
-      // No timeout race around create(): abandoning it is what caused the
-      // collision above. Only the warmup — which runs after create() has
-      // fully settled, so nothing else can be mid-init — is time-bounded.
-      const candidate = await build("webgpu");
+      const candidate = await withTimeout(
+        build("webgpu").finally(() => {
+          settledOnItsOwn = true;
+        }),
+        WEBGPU_CREATE_TIMEOUT_MS,
+        "WebGPU session creation",
+      );
       const warmupMs = await withTimeout(
-        warmupSession(candidate, ort),
+        warmupSession(candidate, ort).finally(() => {
+          settledOnItsOwn = true;
+        }),
         WEBGPU_INIT_TIMEOUT_MS,
         "WebGPU warmup",
       );
@@ -303,7 +344,18 @@ async function createSession(modelUrl: string): Promise<InferenceSession> {
       activeBackend = "webgpu";
       return candidate;
     } catch (err) {
-      // A create() that *rejected* has finished — nothing is mid-init — so
+      if (!settledOnItsOwn) {
+        // create() or warmup is still running somewhere behind this
+        // abandoned timeout. A second create() call now would collide with
+        // it, not recover from it — the only safe move is to stop here,
+        // exactly as a WASM timeout already does, and say so plainly rather
+        // than hang forever with a spinner nobody can act on.
+        throw new Error(
+          "The detection engine did not respond while starting on this device's GPU. " +
+            "Reload the page and press Start camera again.",
+        );
+      }
+      // create() (or warmup) rejected on its own — nothing is mid-init — so
       // the WASM attempt below is safe to make.
       console.warn("[zemainspect] WebGPU backend failed, using WASM:", err);
     }
